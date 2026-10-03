@@ -1,0 +1,1233 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>GNSS 数据中心 · 智能运维</title>
+    <!-- Font Awesome 图标库  -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css"/>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:opsz@14..32&display=swap" rel="stylesheet"/>
+    <style>
+        /* ========== 全局重置 & 变量 ========== */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        :root {
+            --sidebar-width: 240px;
+            --primary: #4f46e5;
+            --primary-light: #818cf8;
+            --primary-dark: #3730a3;
+            --bg: #f1f5f9;
+            --card-bg: #ffffff;
+            --text: #0f172a;
+            --text-secondary: #475569;
+            --border: #e2e8f0;
+            --shadow: 0 8px 24px rgba(0, 0, 0, 0.06);
+            --radius: 16px;
+            --transition: 0.25s ease;
+        }
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            display: flex;
+            min-height: 100vh;
+        }
+        /* ========== 侧边栏 ========== */
+        .sidebar {
+            width: var(--sidebar-width);
+            background: var(--card-bg);
+            border-right: 1px solid var(--border);
+            padding: 28px 18px;
+            display: flex;
+            flex-direction: column;
+            position: fixed;
+            top: 0;
+            left: 0;
+            bottom: 0;
+            box-shadow: 2px 0 12px rgba(0, 0, 0, 0.02);
+            z-index: 100;
+            transition: transform var(--transition);
+        }
+        .sidebar-brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 36px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid var(--border);
+        }
+        .sidebar-brand i {
+            font-size: 28px;
+            color: var(--primary);
+            background: rgba(79, 70, 229, 0.10);
+            padding: 10px;
+            border-radius: 12px;
+        }
+        .sidebar-brand span {
+            font-weight: 700;
+            font-size: 20px;
+            letter-spacing: -0.3px;
+            background: linear-gradient(135deg, var(--primary), var(--primary-light));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            padding: 12px 16px;
+            border-radius: 12px;
+            font-weight: 500;
+            font-size: 15px;
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all var(--transition);
+            margin-bottom: 4px;
+            border: none;
+            background: transparent;
+            width: 100%;
+            text-align: left;
+        }
+        .nav-item i {
+            width: 22px;
+            font-size: 18px;
+            text-align: center;
+        }
+        .nav-item:hover {
+            background: rgba(79, 70, 229, 0.06);
+            color: var(--text);
+        }
+        .nav-item.active {
+            background: rgba(79, 70, 229, 0.12);
+            color: var(--primary);
+            font-weight: 600;
+            box-shadow: inset 0 0 0 1px rgba(79, 70, 229, 0.15);
+        }
+        .nav-item .badge {
+            margin-left: auto;
+            background: var(--primary);
+            color: #fff;
+            font-size: 11px;
+            padding: 2px 10px;
+            border-radius: 20px;
+            font-weight: 500;
+        }
+        .sidebar-footer {
+            margin-top: auto;
+            font-size: 13px;
+            color: var(--text-secondary);
+            padding-top: 20px;
+            border-top: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .sidebar-footer small {
+            opacity: 0.7;
+        }
+        /* ========== 主内容 ========== */
+        .main {
+            margin-left: var(--sidebar-width);
+            flex: 1;
+            padding: 32px 40px 40px 40px;
+            min-height: 100vh;
+        }
+        .page-header {
+            margin-bottom: 28px;
+        }
+        .page-header h1 {
+            font-size: 28px;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .page-header h1 i {
+            color: var(--primary);
+            font-size: 28px;
+        }
+        .page-header p {
+            color: var(--text-secondary);
+            margin-top: 4px;
+            font-size: 15px;
+        }
+        /* ========== 页面容器 ========== */
+        .page {
+            display: none;
+            animation: fadeUp 0.35s ease;
+        }
+        .page.active {
+            display: block;
+        }
+        @keyframes fadeUp {
+            0% { opacity: 0; transform: translateY(12px); }
+            100% { opacity: 1; transform: translateY(0); }
+        }
+        /* ========== 卡片 ========== */
+        .card {
+            background: var(--card-bg);
+            border-radius: var(--radius);
+            padding: 24px 28px;
+            box-shadow: var(--shadow);
+            border: 1px solid var(--border);
+            margin-bottom: 24px;
+            transition: box-shadow var(--transition);
+        }
+        .card:hover {
+            box-shadow: 0 12px 32px rgba(0, 0, 0, 0.08);
+        }
+        .card-title {
+            font-weight: 600;
+            font-size: 17px;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: var(--text);
+        }
+        .card-title i {
+            color: var(--primary);
+            font-size: 18px;
+        }
+        .card-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+        }
+        @media (max-width: 900px) {
+            .card-grid { grid-template-columns: 1fr; }
+        }
+        /* ========== 表单控件 ========== */
+        .form-group {
+            margin-bottom: 16px;
+        }
+        .form-group label {
+            display: block;
+            font-weight: 500;
+            font-size: 14px;
+            margin-bottom: 6px;
+            color: var(--text-secondary);
+        }
+        .form-control {
+            width: 100%;
+            padding: 10px 14px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            font-size: 14px;
+            background: var(--bg);
+            transition: border var(--transition), box-shadow var(--transition);
+            font-family: inherit;
+            color: var(--text);
+        }
+        .form-control:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15);
+            background: #fff;
+        }
+        textarea.form-control {
+            resize: vertical;
+            min-height: 80px;
+        }
+        select.form-control {
+            appearance: auto;
+        }
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 22px;
+            border: none;
+            border-radius: 10px;
+            font-weight: 600;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all var(--transition);
+            background: var(--bg);
+            color: var(--text);
+            border: 1px solid transparent;
+        }
+        .btn-primary {
+            background: var(--primary);
+            color: #fff;
+        }
+        .btn-primary:hover {
+            background: var(--primary-dark);
+            transform: translateY(-1px);
+            box-shadow: 0 6px 16px rgba(79, 70, 229, 0.30);
+        }
+        .btn-outline {
+            background: transparent;
+            border-color: var(--border);
+        }
+        .btn-outline:hover {
+            background: var(--bg);
+            border-color: var(--text-secondary);
+        }
+        .btn-success {
+            background: #10b981;
+            color: #fff;
+        }
+        .btn-success:hover {
+            background: #059669;
+        }
+        .btn-danger {
+            background: #ef4444;
+            color: #fff;
+        }
+        .btn-danger:hover {
+            background: #dc2626;
+        }
+        .btn-sm {
+            padding: 6px 14px;
+            font-size: 13px;
+        }
+        .btn-block {
+            width: 100%;
+            justify-content: center;
+        }
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none !important;
+        }
+        /* ========== 表格 ========== */
+        .table-wrap {
+            overflow-x: auto;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+        }
+        table th {
+            background: var(--bg);
+            text-align: left;
+            padding: 12px 16px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            border-bottom: 1px solid var(--border);
+        }
+        table td {
+            padding: 10px 16px;
+            border-bottom: 1px solid var(--border);
+        }
+        table tr:last-child td {
+            border-bottom: none;
+        }
+        .tag {
+            display: inline-block;
+            padding: 2px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .tag-danger { background: #fee2e2; color: #b91c1c; }
+        .tag-warning { background: #fef3c7; color: #92400e; }
+        .tag-success { background: #d1fae5; color: #065f46; }
+        .tag-info { background: #dbeafe; color: #1e40af; }
+        /* ========== 状态指示 ========== */
+        .status-dot {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        .status-dot.green { background: #10b981; }
+        .status-dot.red { background: #ef4444; }
+        .status-dot.yellow { background: #f59e0b; }
+        /* ========== 文件上传区 ========== */
+        .upload-zone {
+            border: 2px dashed var(--border);
+            border-radius: 12px;
+            padding: 32px;
+            text-align: center;
+            transition: all var(--transition);
+            background: rgba(79, 70, 229, 0.02);
+            cursor: pointer;
+        }
+        .upload-zone:hover {
+            border-color: var(--primary);
+            background: rgba(79, 70, 229, 0.04);
+        }
+        .upload-zone i {
+            font-size: 36px;
+            color: var(--primary-light);
+            margin-bottom: 8px;
+        }
+        .upload-zone p {
+            color: var(--text-secondary);
+            font-size: 14px;
+        }
+        /* ========== 日志条目 ========== */
+        .log-entry {
+            padding: 8px 14px;
+            border-radius: 8px;
+            margin-bottom: 4px;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 13px;
+            background: var(--bg);
+            border-left: 3px solid transparent;
+        }
+        .log-entry.error {
+            border-left-color: #ef4444;
+            background: #fef2f2;
+        }
+        .log-entry.warning {
+            border-left-color: #f59e0b;
+            background: #fffbeb;
+        }
+        .log-entry.info {
+            border-left-color: var(--primary);
+        }
+        /* ========== 任务列表 ========== */
+        .task-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 16px;
+            background: var(--bg);
+            border-radius: 10px;
+            margin-bottom: 8px;
+            border: 1px solid var(--border);
+        }
+        .task-item .task-info {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            flex-wrap: wrap;
+        }
+        .task-item .task-info .task-name {
+            font-weight: 500;
+        }
+        .task-item .task-info .task-desc {
+            color: var(--text-secondary);
+            font-size: 13px;
+        }
+        /* ========== 响应式 ========== */
+        @media (max-width: 768px) {
+            .sidebar {
+                transform: translateX(-100%);
+                width: 280px;
+            }
+            .sidebar.open {
+                transform: translateX(0);
+            }
+            .main {
+                margin-left: 0;
+                padding: 20px 16px;
+            }
+            .hamburger {
+                display: flex !important;
+            }
+            .card-grid {
+                grid-template-columns: 1fr;
+            }
+            .page-header h1 {
+                font-size: 22px;
+            }
+        }
+        .hamburger {
+            display: none;
+            background: none;
+            border: none;
+            font-size: 24px;
+            color: var(--text);
+            cursor: pointer;
+            padding: 8px;
+            margin-bottom: 16px;
+        }
+        /* ========== 杂项 ========== */
+        .flex-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+        .mt-12 { margin-top: 12px; }
+        .mt-16 { margin-top: 16px; }
+        .mb-12 { margin-bottom: 12px; }
+        .text-center { text-align: center; }
+        .text-secondary { color: var(--text-secondary); }
+        .text-sm { font-size: 14px; }
+        .gap-8 { gap: 8px; }
+        .w-full { width: 100%; }
+        .hidden { display: none !important; }
+        /* 知识库文档标签 */
+        .doc-tag {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: var(--bg);
+            padding: 4px 14px 4px 10px;
+            border-radius: 20px;
+            border: 1px solid var(--border);
+            font-size: 13px;
+            margin: 4px 4px 4px 0;
+        }
+        .doc-tag i {
+            color: var(--primary-light);
+            font-size: 14px;
+        }
+        .doc-tag .remove {
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 14px;
+            margin-left: 4px;
+        }
+        .doc-tag .remove:hover {
+            color: #ef4444;
+        }
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: var(--bg);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 10px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--text-secondary);
+        }
+        /* GNSS 特色点缀 */
+        .gnss-icon {
+            color: #4f46e5;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- ===== 侧边栏 ===== -->
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-brand">
+            <i class="fas fa-satellite"></i>
+            <span>GNSS 智能运维</span>
+        </div>
+        <nav style="flex:1;">
+            <button class="nav-item active" data-page="page-log">
+                <i class="fas fa-chart-line"></i> 日志异常分析
+                <span class="badge">卫星</span>
+            </button>
+            <button class="nav-item" data-page="page-qa">
+                <i class="fas fa-comments"></i> 智能问数
+                <span class="badge">知识库</span>
+            </button>
+            <button class="nav-item" data-page="page-task">
+                <i class="fas fa-robot"></i> 任务自动化
+                <span class="badge">调度</span>
+            </button>
+        </nav>
+        <div class="sidebar-footer">
+            <span><i class="fas fa-circle" style="color:#10b981;font-size:10px;"></i> 数据中心在线</span>
+            <small>GNSS v2.0 · 2026</small>
+        </div>
+    </aside>
+
+    <!-- ===== 主内容 ===== -->
+    <main class="main" id="mainContent">
+        <!-- 移动端汉堡菜单 -->
+        <button class="hamburger" id="hamburgerBtn">
+            <i class="fas fa-bars"></i>
+        </button>
+
+        <!-- ============================================================ -->
+        <!-- 页面：日志异常分析 (GNSS 场景) -->
+        <!-- ============================================================ -->
+        <section class="page active" id="page-log">
+            <div class="page-header">
+                <h1><i class="fas fa-satellite-dish"></i> GNSS 日志异常分析</h1>
+                <p>小模型规则初筛 + 大模型深度诊断，监测卫星/观测站数据流异常</p>
+            </div>
+
+            <div class="card-grid">
+                <!-- 左：数据源 & 控制 -->
+                <div>
+                    <div class="card">
+                        <div class="card-title"><i class="fas fa-database"></i> 数据源</div>
+                        <div class="form-group">
+                            <label>选择示例日志</label>
+                            <select class="form-control" id="logSample">
+                                <option value="sample1">📡 卫星钟差异常 + 站中断</option>
+                                <option value="sample2">📡 正常数据流 (BDS/GPS)</option>
+                                <option value="sample3">📡 轨道机动 + 多路径警告</option>
+                            </select>
+                        </div>
+                        <div class="upload-zone" id="logUploadZone">
+                            <i class="fas fa-cloud-upload-alt"></i>
+                            <p>拖拽或点击上传 <code>.log</code> / <code>.rinex</code> / <code>.txt</code></p>
+                            <input type="file" id="logFileInput" accept=".log,.txt,.rinex" style="display:none;" />
+                        </div>
+                        <div class="flex-row mt-12">
+                            <button class="btn btn-primary" id="btnAnalyzeSmall">
+                                <i class="fas fa-microscope"></i> 小模型分析
+                            </button>
+                            <button class="btn btn-primary" id="btnAnalyzeLarge" style="background:#7c3aed;">
+                                <i class="fas fa-brain"></i> 大模型深度分析
+                            </button>
+                        </div>
+                        <div class="mt-12 text-sm text-secondary" id="logStatus">就绪，共 0 条日志</div>
+                    </div>
+                    <!-- 小模型结果摘要 -->
+                    <div class="card" id="smallResultCard" style="display:none;">
+                        <div class="card-title"><i class="fas fa-bolt" style="color:#f59e0b;"></i> 小模型 · 规则初筛</div>
+                        <div id="smallResultContent">—</div>
+                    </div>
+                </div>
+
+                <!-- 右：日志展示 & 大模型结果 -->
+                <div>
+                    <div class="card" style="max-height:480px;overflow-y:auto;" id="logDisplay">
+                        <div class="card-title"><i class="fas fa-list-ul"></i> GNSS 日志流 <span class="text-secondary text-sm" style="font-weight:400;margin-left:8px;" id="logCountLabel">0 条</span></div>
+                        <div id="logEntries">
+                            <div class="text-secondary text-sm" style="padding:20px 0;text-align:center;">点击「小模型分析」或「大模型分析」查看结果</div>
+                        </div>
+                    </div>
+                    <div class="card" id="largeResultCard" style="display:none;">
+                        <div class="card-title"><i class="fas fa-stars" style="color:#7c3aed;"></i> 大模型 · 深度洞察</div>
+                        <div id="largeResultContent">—</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ============================================================ -->
+        <!-- 页面：智能问数 (GNSS 知识库) -->
+        <!-- ============================================================ -->
+        <section class="page" id="page-qa">
+            <div class="page-header">
+                <h1><i class="fas fa-comments"></i> GNSS 智能问数</h1>
+                <p>知识库 + 大模型，用自然语言查询卫星轨道、钟差、站数据</p>
+            </div>
+
+            <div class="card-grid">
+                <!-- 左：知识库管理 -->
+                <div>
+                    <div class="card">
+                        <div class="card-title"><i class="fas fa-book"></i> 知识库</div>
+                        <div class="form-group">
+                            <label>上传文档 (PDF / TXT / MD)</label>
+                            <div class="upload-zone" id="kbUploadZone" style="padding:20px;">
+                                <i class="fas fa-file-upload"></i>
+                                <p>点击上传知识文档</p>
+                                <input type="file" id="kbFileInput" accept=".pdf,.txt,.md" style="display:none;" multiple />
+                            </div>
+                        </div>
+                        <div id="kbDocList">
+                            <div class="doc-tag"><i class="fas fa-file-alt"></i> RINEX_v3.04.pdf <span class="remove" data-doc="rinex">✕</span></div>
+                            <div class="doc-tag"><i class="fas fa-file-alt"></i> 北斗星座参数.md <span class="remove" data-doc="bds">✕</span></div>
+                            <div class="doc-tag"><i class="fas fa-file-alt"></i> 站元数据_BJFS.txt <span class="remove" data-doc="bjfs">✕</span></div>
+                            <div class="text-secondary text-sm mt-12">共 3 个文档</div>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-title"><i class="fas fa-history"></i> 问答历史</div>
+                        <div id="qaHistory" style="max-height:200px;overflow-y:auto;">
+                            <div class="text-secondary text-sm" style="padding:8px 0;">暂无对话</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 右：问答交互 -->
+                <div>
+                    <div class="card" style="min-height:320px;">
+                        <div class="card-title"><i class="fas fa-message"></i> 提问 (GNSS 领域)</div>
+                        <div class="form-group">
+                            <label>输入您的问题</label>
+                            <textarea class="form-control" id="qaInput" placeholder="例如：BJFS站最近24小时数据完整性？BDS卫星钟差如何？" rows="3"></textarea>
+                        </div>
+                        <div class="flex-row">
+                            <button class="btn btn-primary" id="btnAsk"><i class="fas fa-paper-plane"></i> 提问</button>
+                            <button class="btn btn-outline" id="btnClearQA"><i class="fas fa-eraser"></i> 清空历史</button>
+                        </div>
+                        <div class="mt-16" id="qaAnswer">
+                            <div class="text-secondary text-sm">回答将在这里显示</div>
+                        </div>
+                        <div class="mt-12" id="qaContext" style="display:none;">
+                            <div class="text-sm" style="color:var(--text-secondary);"><i class="fas fa-paperclip"></i> 参考知识片段：</div>
+                            <div id="qaContextContent" class="text-sm" style="background:var(--bg);padding:12px;border-radius:8px;margin-top:6px;"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ============================================================ -->
+        <!-- 页面：任务自动化 (GNSS 数据任务) -->
+        <!-- ============================================================ -->
+        <section class="page" id="page-task">
+            <div class="page-header">
+                <h1><i class="fas fa-robot"></i> 任务自动化</h1>
+                <p>大模型驱动例行任务：统计RINEX/SP3、打包归档、发送日报</p>
+            </div>
+
+            <div class="card-grid">
+                <!-- 左：任务 -->
+                <div>
+                    <div class="card">
+                        <div class="card-title"><i class="fas fa-play-circle"></i> 任务</div>
+                        <div class="form-group">
+                            <label>数据目录 (如 /data/rinex)</label>
+                            <input class="form-control" id="taskDir" value="/data/rinex/2026/08" placeholder="例如 /data/rinex" />
+                        </div>
+                        <div class="flex-row gap-8">
+                            <button class="btn btn-outline btn-sm" id="btnStatFiles"><i class="fas fa-calculator"></i> 统计文件 & 大小</button>
+                            <button class="btn btn-outline btn-sm" id="btnPackDir"><i class="fas fa-archive"></i> 打包压缩</button>
+                        </div>
+                        <div class="mt-12" id="taskOnceResult">
+                            <div class="text-secondary text-sm">等待执行…</div>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-title"><i class="fas fa-clock"></i> 例行任务 · 调度</div>
+                        <div class="form-group">
+                            <label>任务名称</label>
+                            <input class="form-control" id="cronName" value="每日RINEX归档报告" />
+                        </div>
+                        <div class="flex-row">
+                            <div class="form-group" style="flex:1;">
+                                <label>时间 (HH:MM)</label>
+                                <input class="form-control" id="cronTime" value="09:00" type="time" />
+                            </div>
+                            <div class="form-group" style="flex:1;">
+                                <label>统计内容</label>
+                                <input class="form-control" id="cronContent" value="RINEX文件数/站可用率/钟差RMS" />
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>收件邮箱</label>
+                            <input class="form-control" id="cronEmail" value="gnss-ops@center.com" placeholder="recipient@example.com" />
+                        </div>
+                        <button class="btn btn-success btn-block" id="btnAddCron"><i class="fas fa-plus-circle"></i> 添加例行任务</button>
+                    </div>
+                </div>
+
+                <!-- 右：任务列表 -->
+                <div>
+                    <div class="card">
+                        <div class="card-title"><i class="fas fa-list-check"></i> 任务清单</div>
+                        <div id="taskList">
+                            <div class="task-item">
+                                <div class="task-info">
+                                    <span class="status-dot green"></span>
+                                    <span class="task-name">每日SP3归档</span>
+                                    <span class="task-desc">每天 09:00 · SP3文件/钟差 → gnss-ops@center.com</span>
+                                </div>
+                                <button class="btn btn-danger btn-sm">停止</button>
+                            </div>
+                            <div class="task-item">
+                                <div class="task-info">
+                                    <span class="status-dot yellow"></span>
+                                    <span class="task-name">周报-站坐标</span>
+                                    <span class="task-desc">每周一 08:00 · 站坐标时间序列 → report@center.com</span>
+                                </div>
+                                <button class="btn btn-danger btn-sm">停止</button>
+                            </div>
+                            <div class="text-secondary text-sm mt-12">共 2 个例行任务</div>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-title"><i class="fas fa-paper-plane"></i> 邮件发送记录</div>
+                        <div id="mailLog">
+                            <div class="text-secondary text-sm">📧 2026-08-15 09:00 每日SP3归档 → gnss-ops@center.com (成功)</div>
+                            <div class="text-secondary text-sm">📧 2026-08-14 09:00 每日SP3归档 → gnss-ops@center.com (成功)</div>
+                            <div class="text-secondary text-sm">📧 2026-08-13 09:00 每日SP3归档 → gnss-ops@center.com (成功)</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <script>
+        // ================================================================
+        //  全局状态 (GNSS 场景)
+        // ================================================================
+        const state = {
+            currentPage: 'page-log',
+            logs: [],
+            kbDocs: ['RINEX_v3.04.pdf', '北斗星座参数.md', '站元数据_BJFS.txt'],
+            qaHistory: [],
+            tasks: [
+                { name: '每日SP3归档', time: '09:00', content: 'SP3文件/钟差', email: 'gnss-ops@center.com', active: true },
+                { name: '周报-站坐标', time: '08:00', content: '站坐标时间序列', email: 'report@center.com', active: true }
+            ],
+            mailLogs: [
+                '2026-08-15 09:00 每日SP3归档 → gnss-ops@center.com (成功)',
+                '2026-08-14 09:00 每日SP3归档 → gnss-ops@center.com (成功)',
+                '2026-08-13 09:00 每日SP3归档 → gnss-ops@center.com (成功)'
+            ]
+        };
+
+        // ================================================================
+        //  示例 GNSS 日志数据
+        // ================================================================
+        const SAMPLE_LOGS = {
+            sample1: [
+                { time: '08:12:15', level: 'INFO', msg: 'BJFS站 数据流连接建立' },
+                { time: '08:12:18', level: 'INFO', msg: 'GPS卫星 PRN01 星历更新' },
+                { time: '08:15:02', level: 'WARN', msg: 'BDS C33 钟差跳变 1.2ns (阈值0.8ns)' },
+                { time: '08:17:33', level: 'ERROR', msg: 'BJFS站 数据中断 45s (网络超时)' },
+                { time: '08:18:10', level: 'INFO', msg: 'BJFS站 重连成功' },
+                { time: '08:20:45', level: 'ERROR', msg: 'GLONASS R02 载波相位周跳 (L1/L2)' },
+                { time: '08:22:20', level: 'INFO', msg: 'SP3 精密轨道文件接收完成' },
+                { time: '08:25:55', level: 'WARN', msg: '站 XIA1 多路径 RMS 0.45m (阈值0.3m)' },
+                { time: '08:28:12', level: 'ERROR', msg: 'BDS C35 卫星健康标志异常 (不可用)' },
+                { time: '08:30:40', level: 'INFO', msg: '对流层模型 ZTD 更新' },
+            ],
+            sample2: [
+                { time: '09:00:01', level: 'INFO', msg: '系统 GNSS 数据流启动' },
+                { time: '09:00:05', level: 'INFO', msg: '全部 12 个观测站信号锁定' },
+                { time: '09:05:22', level: 'INFO', msg: 'BDS-3 卫星钟差参数正常' },
+                { time: '09:10:34', level: 'INFO', msg: 'GPS L2C 信号锁定率 98%' },
+                { time: '09:15:47', level: 'INFO', msg: '每日 RINEX 文件归档完成' },
+                { time: '09:20:19', level: 'INFO', msg: 'Galileo E5a 完好性正常' },
+            ],
+            sample3: [
+                { time: '10:00:10', level: 'INFO', msg: 'GNSS 数据预处理开始' },
+                { time: '10:02:33', level: 'WARN', msg: 'BDS C20 轨道机动 (偏航控制)' },
+                { time: '10:05:17', level: 'INFO', msg: '测站 TASH 数据延迟 120s' },
+                { time: '10:08:55', level: 'ERROR', msg: 'SP3 文件缺失: 2026-08-15 12:00' },
+                { time: '10:12:41', level: 'INFO', msg: '自动下载补充 SP3 文件' },
+                { time: '10:15:09', level: 'WARN', msg: 'GPS PRN21 伪距残差 3.2m (阈值2.0m)' },
+                { time: '10:18:22', level: 'INFO', msg: 'PPP 解算收敛 (精度 2.5cm)' },
+                { time: '10:20:36', level: 'ERROR', msg: '接收机 BKG 时钟失锁 (Flag 3)' },
+                { time: '10:23:14', level: 'INFO', msg: '自动重启接收机进程' },
+                { time: '10:25:48', level: 'INFO', msg: 'BKG 站恢复锁定' },
+            ]
+        };
+
+        // ================================================================
+        //  渲染函数
+        // ================================================================
+
+        function renderLogs(logs) {
+            const container = document.getElementById('logEntries');
+            const countLabel = document.getElementById('logCountLabel');
+            if (!logs || logs.length === 0) {
+                container.innerHTML = `<div class="text-secondary text-sm" style="padding:20px 0;text-align:center;">暂无 GNSS 日志数据</div>`;
+                countLabel.textContent = '0 条';
+                return;
+            }
+            let html = '';
+            logs.forEach(entry => {
+                const level = entry.level || 'INFO';
+                const cls = level === 'ERROR' ? 'error' : level === 'WARN' ? 'warning' : 'info';
+                html += `<div class="log-entry ${cls}">[${entry.time || '--'}] [${level}] ${entry.msg}</div>`;
+            });
+            container.innerHTML = html;
+            countLabel.textContent = logs.length + ' 条';
+        }
+
+        function renderSmallResult(logs) {
+            const card = document.getElementById('smallResultCard');
+            const content = document.getElementById('smallResultContent');
+            if (!logs || logs.length === 0) { card.style.display = 'none'; return; }
+            card.style.display = 'block';
+            const errors = logs.filter(l => l.level === 'ERROR');
+            const warns = logs.filter(l => l.level === 'WARN');
+            let html = `
+                <div style="display:flex;gap:20px;flex-wrap:wrap;margin-bottom:12px;">
+                    <span><span class="status-dot red"></span> 异常 <strong>${errors.length}</strong></span>
+                    <span><span class="status-dot yellow"></span> 警告 <strong>${warns.length}</strong></span>
+                    <span><span class="status-dot green"></span> 正常 <strong>${logs.length - errors.length - warns.length}</strong></span>
+                    <span>总计 <strong>${logs.length}</strong></span>
+                </div>
+                <div style="font-size:14px;background:var(--bg);padding:12px;border-radius:8px;">
+                    <strong>⚠️ GNSS 异常摘要：</strong><br/>
+            `;
+            const anomalies = [...errors, ...warns];
+            if (anomalies.length === 0) {
+                html += '✅ 所有卫星/观测站信号正常，无异常。';
+            } else {
+                anomalies.slice(0, 5).forEach(a => {
+                    html += `• [${a.time}] ${a.level}: ${a.msg}<br/>`;
+                });
+                if (anomalies.length > 5) html += `… 还有 ${anomalies.length - 5} 条异常`;
+            }
+            html += '</div>';
+            content.innerHTML = html;
+        }
+
+        function renderLargeResult(logs) {
+            const card = document.getElementById('largeResultCard');
+            const content = document.getElementById('largeResultContent');
+            if (!logs || logs.length === 0) { card.style.display = 'none'; return; }
+            card.style.display = 'block';
+            const errors = logs.filter(l => l.level === 'ERROR');
+            const warns = logs.filter(l => l.level === 'WARN');
+
+            let insight = '';
+            if (errors.length === 0 && warns.length === 0) {
+                insight = '✅ 深度语义分析：GNSS 数据流稳定，卫星钟差、轨道、站坐标均无异常模式。建议保持当前数据采集策略。';
+            } else {
+                const errMsgs = errors.map(e => e.msg).join('；');
+                const warnMsgs = warns.map(w => w.msg).join('；');
+                insight = `
+                    🧠 <strong>GNSS 深度分析结论：</strong><br/>
+                    • 检测到 <strong>${errors.length}</strong> 个错误，<strong>${warns.length}</strong> 个警告。<br/>
+                    • 主要异常：${errMsgs || '无'}<br/>
+                    • 主要警告：${warnMsgs || '无'}<br/>
+                    • <span style="color:#7c3aed;">建议：</span> 优先处理卫星钟差跳变 (C33) 和站数据中断 (BJFS)，检查网络连接及接收机状态。轨道机动属正常操作，持续监测即可。
+                    <br/><br/>
+                    <span style="font-size:13px;color:var(--text-secondary);">💡 大模型基于 GNSS 专家知识库给出诊断建议。</span>
+                `;
+            }
+            content.innerHTML = insight;
+        }
+
+        function renderKbDocs() {
+            const container = document.getElementById('kbDocList');
+            if (!container) return;
+            let html = '';
+            state.kbDocs.forEach(doc => {
+                html += `<div class="doc-tag"><i class="fas fa-file-alt"></i> ${doc} <span class="remove" data-doc="${doc}">✕</span></div>`;
+            });
+            html += `<div class="text-secondary text-sm mt-12">共 ${state.kbDocs.length} 个文档</div>`;
+            container.innerHTML = html;
+            container.querySelectorAll('.remove').forEach(el => {
+                el.addEventListener('click', function(e) {
+                    const docName = this.dataset.doc;
+                    state.kbDocs = state.kbDocs.filter(d => d !== docName);
+                    renderKbDocs();
+                    updateStatus('已移除文档: ' + docName);
+                });
+            });
+        }
+
+        function renderQaHistory() {
+            const container = document.getElementById('qaHistory');
+            if (!container) return;
+            if (state.qaHistory.length === 0) {
+                container.innerHTML = `<div class="text-secondary text-sm" style="padding:8px 0;">暂无对话</div>`;
+                return;
+            }
+            let html = '';
+            state.qaHistory.slice(-6).forEach(item => {
+                html += `
+                    <div style="background:var(--bg);border-radius:8px;padding:8px 12px;margin-bottom:6px;font-size:14px;">
+                        <div><strong>Q:</strong> ${item.q}</div>
+                        <div style="color:var(--primary);"><strong>A:</strong> ${item.a}</div>
+                    </div>
+                `;
+            });
+            container.innerHTML = html;
+        }
+
+        function renderTasks() {
+            const container = document.getElementById('taskList');
+            if (!container) return;
+            if (state.tasks.length === 0) {
+                container.innerHTML = `<div class="text-secondary text-sm">暂无任务</div>`;
+                return;
+            }
+            let html = '';
+            state.tasks.forEach((task, idx) => {
+                const dot = task.active ? 'green' : 'red';
+                html += `
+                    <div class="task-item">
+                        <div class="task-info">
+                            <span class="status-dot ${dot}"></span>
+                            <span class="task-name">${task.name}</span>
+                            <span class="task-desc">每天 ${task.time} · ${task.content} → ${task.email}</span>
+                        </div>
+                        <button class="btn btn-danger btn-sm" data-idx="${idx}">${task.active ? '停止' : '已停'}</button>
+                    </div>
+                `;
+            });
+            html += `<div class="text-secondary text-sm mt-12">共 ${state.tasks.length} 个例行任务</div>`;
+            container.innerHTML = html;
+            container.querySelectorAll('.btn-danger').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    const idx = parseInt(this.dataset.idx);
+                    if (!isNaN(idx) && state.tasks[idx]) {
+                        state.tasks[idx].active = !state.tasks[idx].active;
+                        renderTasks();
+                        updateStatus(`任务 "${state.tasks[idx].name}" ${state.tasks[idx].active ? '已恢复' : '已暂停'}`);
+                    }
+                });
+            });
+        }
+
+        function renderMailLogs() {
+            const container = document.getElementById('mailLog');
+            if (!container) return;
+            if (state.mailLogs.length === 0) {
+                container.innerHTML = `<div class="text-secondary text-sm">暂无邮件记录</div>`;
+                return;
+            }
+            let html = '';
+            state.mailLogs.slice().reverse().forEach(log => {
+                html += `<div class="text-secondary text-sm">📧 ${log}</div>`;
+            });
+            container.innerHTML = html;
+        }
+
+        function updateStatus(msg) {
+            const el = document.getElementById('logStatus');
+            if (el) el.textContent = msg;
+        }
+
+        // ================================================================
+        //  核心功能函数
+        // ================================================================
+
+        function loadSampleLog(sampleKey) {
+            const data = SAMPLE_LOGS[sampleKey] || SAMPLE_LOGS.sample1;
+            state.logs = data.map(l => ({ ...l }));
+            renderLogs(state.logs);
+            updateStatus(`已加载 GNSS 示例日志，共 ${state.logs.length} 条`);
+            document.getElementById('smallResultCard').style.display = 'none';
+            document.getElementById('largeResultCard').style.display = 'none';
+        }
+
+        function analyzeSmall() {
+            if (state.logs.length === 0) { updateStatus('⚠️ 请先加载日志数据'); return; }
+            renderSmallResult(state.logs);
+            const anomalies = state.logs.filter(l => l.level === 'ERROR' || l.level === 'WARN').length;
+            updateStatus(`✅ 小模型分析完成，发现 ${anomalies} 条 GNSS 异常/警告`);
+        }
+
+        function analyzeLarge() {
+            if (state.logs.length === 0) { updateStatus('⚠️ 请先加载日志数据'); return; }
+            updateStatus('🧠 大模型正在深度分析 GNSS 数据…');
+            document.getElementById('largeResultCard').style.display = 'none';
+            setTimeout(() => {
+                renderLargeResult(state.logs);
+                const anomalies = state.logs.filter(l => l.level === 'ERROR' || l.level === 'WARN').length;
+                updateStatus(`✅ 大模型分析完成，异常 ${anomalies} 条，建议已生成`);
+            }, 600);
+        }
+
+        /** 智能问答 (GNSS 领域) */
+        function askQuestion() {
+            const input = document.getElementById('qaInput');
+            const q = input.value.trim();
+            if (!q) { updateStatus('⚠️ 请输入问题'); return; }
+            const answer = generateGNSSAnswer(q);
+            state.qaHistory.push({ q, a: answer });
+            renderQaHistory();
+
+            const container = document.getElementById('qaAnswer');
+            container.innerHTML = `
+                <div style="background:var(--bg);padding:16px;border-radius:12px;border-left:4px solid var(--primary);">
+                    <div style="font-weight:500;color:var(--primary);margin-bottom:4px;">🤖 大模型回答 (GNSS)</div>
+                    <div>${answer}</div>
+                </div>
+            `;
+            const ctxDiv = document.getElementById('qaContext');
+            const ctxContent = document.getElementById('qaContextContent');
+            ctxDiv.style.display = 'block';
+            ctxContent.innerHTML = `📖 从知识库「北斗星座参数.md」检索到相关片段：<br/>“BDS-3 卫星钟差精度优于 0.5ns，健康状态由完好性参数指示。”`;
+            input.value = '';
+            updateStatus('✅ 已生成 GNSS 领域回答');
+        }
+
+        function generateGNSSAnswer(q) {
+            const lower = q.toLowerCase();
+            if (lower.includes('钟差') || lower.includes('clock')) {
+                return '🕘 根据近期星历，BDS卫星钟差整体稳定。C33卫星出现 1.2ns 跳变，建议更新钟差模型或检查卫星健康状态。GPS钟差偏差在 0.3ns 以内。';
+            } else if (lower.includes('rinex') || lower.includes('文件') || lower.includes('归档')) {
+                return '📁 当前 /data/rinex/2026/08 目录下共 1,248 个 RINEX 文件，总大小约 42 GB。今日归档任务已完成，数据完整性 99.7%。';
+            } else if (lower.includes('bjfs') || lower.includes('站') || lower.includes('观测')) {
+                return '📡 BJFS 站今日数据可用率 98.2%，曾发生 45s 网络中断已恢复。多路径 RMS 0.28m，处于正常水平。坐标时间序列平稳。';
+            } else if (lower.includes('sp3') || lower.includes('轨道')) {
+                return '🌍 精密轨道 SP3 文件已更新至最新（2026-08-15 12:00）。GPS/GLONASS 轨道精度优于 2.5cm，BDS 轨道精度优于 4cm。';
+            } else if (lower.includes('异常') || lower.includes('错误') || lower.includes('error')) {
+                return '⚠️ 最近异常：BDS C35 卫星健康标志异常，建议切换至备用卫星；BJFS站短暂中断；GLONASS R02 发生周跳。请参考详细日志处理。';
+            } else {
+                return '📌 根据 GNSS 知识库，未找到完全匹配的信息。建议您提问如“BDS钟差”、“RINEX归档”、“BJFS站状态”等。';
+            }
+        }
+
+        /** 统计文件 (GNSS 数据) */
+        function statFiles() {
+            const dir = document.getElementById('taskDir').value || '/data/rinex/2026/08';
+            const files = Math.floor(Math.random() * 300) + 50;
+            const size = (Math.random() * 15 + 1.2).toFixed(1);
+            const result = document.getElementById('taskOnceResult');
+            result.innerHTML = `
+                <div style="background:var(--bg);padding:12px;border-radius:8px;">
+                    <div>📁 目录 <code>${dir}</code></div>
+                    <div>📄 文件数：<strong>${files}</strong> 个 (RINEX/SP3)</div>
+                    <div>💾 总大小：<strong>${size} GB</strong></div>
+                    <div class="text-secondary text-sm mt-8">✅ GNSS 数据统计完成 (模拟)</div>
+                </div>
+            `;
+            updateStatus(`✅ 统计完成：${files} 个文件，${size} GB`);
+        }
+
+        function packDir() {
+            const dir = document.getElementById('taskDir').value || '/data/rinex/2026/08';
+            const result = document.getElementById('taskOnceResult');
+            const name = `gnss_archive_${new Date().toISOString().slice(0,10)}.tar.gz`;
+            result.innerHTML = `
+                <div style="background:var(--bg);padding:12px;border-radius:8px;border-left:4px solid #10b981;">
+                    <div>📦 打包完成</div>
+                    <div>📂 源目录：<code>${dir}</code></div>
+                    <div>📎 输出文件：<strong>${name}</strong></div>
+                    <div>📏 压缩后大小：${(Math.random()*5+0.5).toFixed(1)} GB</div>
+                    <div class="text-secondary text-sm mt-8">✅ GNSS 数据打包完成 (模拟)</div>
+                </div>
+            `;
+            updateStatus(`✅ 打包完成：${name}`);
+        }
+
+        function addCronTask() {
+            const name = document.getElementById('cronName').value.trim() || 'GNSS 例行任务';
+            const time = document.getElementById('cronTime').value || '09:00';
+            const content = document.getElementById('cronContent').value.trim() || 'RINEX/SP3 统计';
+            const email = document.getElementById('cronEmail').value.trim() || 'gnss-ops@center.com';
+
+            state.tasks.push({ name, time, content, email, active: true });
+            renderTasks();
+            const now = new Date().toISOString().slice(0, 10);
+            state.mailLogs.push(`${now} ${time} ${name} → ${email} (已调度)`);
+            renderMailLogs();
+            updateStatus(`✅ 已添加例行任务: ${name}`);
+            document.getElementById('cronName').value = '';
+            document.getElementById('cronContent').value = '';
+        }
+
+        // ================================================================
+        //  事件绑定 & 初始化
+        // ================================================================
+
+        document.addEventListener('DOMContentLoaded', function() {
+
+            document.querySelectorAll('.nav-item').forEach(item => {
+                item.addEventListener('click', function() {
+                    const pageId = this.dataset.page;
+                    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+                    this.classList.add('active');
+                    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+                    document.getElementById(pageId).classList.add('active');
+                    state.currentPage = pageId;
+                    document.getElementById('sidebar').classList.remove('open');
+                });
+            });
+
+            document.getElementById('hamburgerBtn').addEventListener('click', function() {
+                document.getElementById('sidebar').classList.toggle('open');
+            });
+
+            document.getElementById('logSample').addEventListener('change', function() {
+                loadSampleLog(this.value);
+            });
+
+            // 上传日志
+            const uploadZone = document.getElementById('logUploadZone');
+            const fileInput = document.getElementById('logFileInput');
+            uploadZone.addEventListener('click', () => fileInput.click());
+            uploadZone.addEventListener('dragover', e => { e.preventDefault();
+                uploadZone.style.borderColor = 'var(--primary)'; });
+            uploadZone.addEventListener('dragleave', () => { uploadZone.style.borderColor = 'var(--border)'; });
+            uploadZone.addEventListener('drop', e => {
+                e.preventDefault();
+                uploadZone.style.borderColor = 'var(--border)';
+                if (e.dataTransfer.files.length) {
+                    fileInput.files = e.dataTransfer.files;
+                    handleLogFile(e.dataTransfer.files[0]);
+                }
+            });
+            fileInput.addEventListener('change', function() {
+                if (this.files.length) handleLogFile(this.files[0]);
+            });
+
+            function handleLogFile(file) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    const text = e.target.result;
+                    const lines = text.split('\n').filter(l => l.trim());
+                    const parsed = lines.map((line, idx) => {
+                        const levelMatch = line.match(/ERROR|WARN|INFO|DEBUG/i);
+                        const timeMatch = line.match(/\d{2}:\d{2}:\d{2}/);
+                        return {
+                            time: timeMatch ? timeMatch[0] : `L${idx+1}`,
+                            level: levelMatch ? levelMatch[0].toUpperCase() : 'INFO',
+                            msg: line.trim()
+                        };
+                    });
+                    state.logs = parsed;
+                    renderLogs(state.logs);
+                    updateStatus(`✅ 已上传 ${file.name}，共 ${state.logs.length} 条 GNSS 日志`);
+                    document.getElementById('smallResultCard').style.display = 'none';
+                    document.getElementById('largeResultCard').style.display = 'none';
+                };
+                reader.readAsText(file);
+            }
+
+            document.getElementById('btnAnalyzeSmall').addEventListener('click', analyzeSmall);
+            document.getElementById('btnAnalyzeLarge').addEventListener('click', analyzeLarge);
+
+            // 智能问数
+            document.getElementById('btnAsk').addEventListener('click', askQuestion);
+            document.getElementById('qaInput').addEventListener('keydown', function(e) {
+                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault();
+                    askQuestion(); }
+            });
+            document.getElementById('btnClearQA').addEventListener('click', function() {
+                state.qaHistory = [];
+                renderQaHistory();
+                document.getElementById('qaAnswer').innerHTML = `<div class="text-secondary text-sm">回答将在这里显示</div>`;
+                document.getElementById('qaContext').style.display = 'none';
+                updateStatus('已清空对话历史');
+            });
+
+            // 知识库上传
+            const kbZone = document.getElementById('kbUploadZone');
+            const kbInput = document.getElementById('kbFileInput');
+            kbZone.addEventListener('click', () => kbInput.click());
+            kbInput.addEventListener('change', function() {
+                if (this.files.length) {
+                    for (let f of this.files) { state.kbDocs.push(f.name); }
+                    renderKbDocs();
+                    updateStatus(`✅ 已上传 ${this.files.length} 个 GNSS 文档`);
+                    this.value = '';
+                }
+            });
+
+            // 任务自动化
+            document.getElementById('btnStatFiles').addEventListener('click', statFiles);
+            document.getElementById('btnPackDir').addEventListener('click', packDir);
+            document.getElementById('btnAddCron').addEventListener('click', addCronTask);
+
+            // 初始化
+            loadSampleLog('sample1');
+            renderKbDocs();
+            renderQaHistory();
+            renderTasks();
+            renderMailLogs();
+
+            document.addEventListener('click', function(e) {
+                const sidebar = document.getElementById('sidebar');
+                const hamburger = document.getElementById('hamburgerBtn');
+                if (window.innerWidth <= 768) {
+                    if (!sidebar.contains(e.target) && !hamburger.contains(e.target)) {
+                        sidebar.classList.remove('open');
+                    }
+                }
+            });
+
+            window.addEventListener('resize', function() {
+                if (window.innerWidth > 768) {
+                    document.getElementById('sidebar').classList.remove('open');
+                }
+            });
+
+            console.log('GNSS 智能运维平台已启动');
+        });
+    </script>
+
+</body>
+</html>
