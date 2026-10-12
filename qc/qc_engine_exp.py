@@ -6,7 +6,6 @@ GNSS 观测数据站间质量检查引擎
 - 每个文件聚合成station QCValue
 - station 模式下额外计算 SPP：ENU3DRMS、DOP 平均值
 - 所有文件汇总为一张多站对比表 QCValue_comparison.csv
-- 可选跨站综合评价（GRA/TOPSIS/WASPAS/INCOME）
 """
 import os
 import re
@@ -38,17 +37,14 @@ from plot.plotCMC import plotCMC
 from plot.plotIOD import plotIOD
 from plot.plotFreq import plotFreq
 from plot.plotHighOrderDiff import plotHighOrderDiff
-from madm.EQCValue import  evaluate_matrix
-from madm.KKNN import evaluate_KKNN
-
 
 matplotlib.use('Agg')
 
-# SPP 默认波段
+# SPP 默认波段：每个系统给出一组候选配对，按优先级排序；
 DEFAULT_SPP_BANDS = {
-    'G': ['C1C', 'C2W'],
-    'C': ['C2I', 'C6I'],
-    'E': ['C1X', 'C5X'],
+    'G': [['C1C', 'C2W'], ['C1C', 'C2L'], ['C1W', 'C2W']],
+    'C': [['C2I', 'C6I'], ['C2I', 'C7I'], ['C1X', 'C5X']],
+    'E': [['C1X', 'C5X'], ['C1C', 'C5Q'], ['C1X', 'C7X']],
 }
 
 # ========================= 辅助函数 =========================
@@ -121,10 +117,7 @@ def _resolve_snx_file(snx_pattern, obs_file=None):
         print(f"警告：--snx 未匹配到任何文件（pattern={snx_pattern}）")
         return None
 
-    if len(matches) == 1:
-        return matches[0]
-
-    # 多文件：必须按年积日精确对应，匹配不到则放弃 SNX 参考
+    # 必须按年积日精确对应，匹配不到则放弃 SNX 参考
     if obs_file:
         label = _extract_date_label(obs_file)   # '2024-310'
         if label:
@@ -132,11 +125,9 @@ def _resolve_snx_file(snx_pattern, obs_file=None):
             for f in matches:
                 if _parse_snx_date(f) == (year, doy):
                     return f
-            print(f"警告：{os.path.basename(obs_file)} ({label}) "
-                  f"未找到对应 SNX 日解文件，跳过 SNX 参考（回退坐标均值）")
+            print(f"警告：{os.path.basename(obs_file)} ({label}) 未找到对应 SNX 日解文件，回退坐标均值")
         else:
-            print(f"警告：{os.path.basename(obs_file)} 无法解析日期，"
-                  f"跳过 SNX 参考（回退坐标均值）")
+            print(f"警告：{os.path.basename(obs_file)} 无法解析日期，回退坐标均）")
     else:
         print(f"警告：--snx 匹配到多个文件但未提供观测文件，跳过 SNX 参考")
     return None
@@ -317,7 +308,9 @@ class QCProcessor:
 
     # ---------- SPP 模块 ----------
     def _build_spp_band_choose(self):
-        """构建 spp() 所需的 bandChoose 字典 {sys: {band: {}}}。"""
+        """构建 spp() 所需的 bandChoose 字典 {sys: {band: {}}}。
+        --bands 优先；默认模式下按候选配对顺序检测，当前配对在观测头中
+        不可用时自动换用下一优先级的配对。"""
         if self.args.bands:
             band_dict = {}
             for part in self.args.bands.split(';'):
@@ -327,10 +320,31 @@ class QCProcessor:
                 band_dict[sys] = {b.strip(): {} for b in bands.split(',') if b.strip()}
             if band_dict:
                 return band_dict
-        # 使用默认波段
+
+        # 观测头中可用的观测类型（run_spp 在 load_obs 之后调用，obs_head 已就绪）
+        obs_types = (self.obs_head or {}).get('OBS TYPES', {}) or {}
+
         systems = self.sys_list if self.sys_list else list(DEFAULT_SPP_BANDS.keys())
-        return {s: {c: {} for c in DEFAULT_SPP_BANDS[s]}
-                for s in systems if s in DEFAULT_SPP_BANDS}
+        band_choose = {}
+        for s in systems:
+            if s not in DEFAULT_SPP_BANDS:
+                print(f"    警告：系统 {s} 无 SPP 默认波段配置，跳过该系统")
+                continue
+            avail = obs_types.get(s, [])
+            chosen = None
+            for pair in DEFAULT_SPP_BANDS[s]:
+                if all(b in avail for b in pair):
+                    chosen = pair
+                    break
+            if chosen is None:
+                print(f"    警告：系统 {s} 找不到可用 SPP 波段配对"
+                      f"（观测头类型: {avail}），跳过该系统")
+                continue
+            if chosen != DEFAULT_SPP_BANDS[s][0]:
+                print(f"    提示：系统 {s} 首选配对 {DEFAULT_SPP_BANDS[s][0]} 不可用，"
+                      f"改用 {chosen}")
+            band_choose[s] = {b: {} for b in chosen}
+        return band_choose
 
     @staticmethod
     def _extract_spp_metrics(posData, XMEAN, YMEAN, ZMEAN):
@@ -602,18 +616,6 @@ class MultiFileQC:
         self.is_sstation = (getattr(args, 'mode', 'prn') == 'Sstation')
         self.station_name = None
 
-    # ---------- 判断 QC 是否全关 ----------
-    def _all_modules_disabled(self):
-        """所有 QC 模块关闭，且（非 station 模式 / 无导航数据 / SPP 关闭）时返回 True。"""
-        for name in QCProcessor.MODULES:
-            if getattr(self.args, name, False):
-                return False
-        # station/Sstation 模式 + 有导航数据 + SPP 开启 => SPP 会产出指标，不能走快速通道
-        if getattr(self.args, 'mode', 'prn') in ('station', 'Sstation'):
-            if (getattr(self.args, 'nav', None)
-                    and getattr(self.args, 'spp', True)):
-                return False
-        return True
 
     # ---------- 导航数据加载 ----------
     def _load_nav_file(self, nav_file):
@@ -696,20 +698,19 @@ class MultiFileQC:
 
     # ---------- 结果收集 ----------
     def _collect_result(self, obs_file, station, station_vals, modules):
-        """将单文件测站级结果计入对比表（Sstation 下行标签为日期）。"""
+        """将单文件测站级结果计入对比表，行结构统一为 (station, date, station_vals)。"""
+        # 从文件名解析日期标签，如 'brux0050.24o' -> '2024-005'；解析失败为 None
+        date_label = _extract_date_label(obs_file)
+
         if self.is_sstation:
-            # Sstation：校验单站一致性，行标签使用日期
+            # Sstation：校验单站一致性
             if self.station_name and self.station_name != station:
-                print(f"   警告：检测到不同测站 {station}（已有 {self.station_name}），"
-                      "Sstation 模式建议仅处理同一测站的多日期文件")
+                print(f"   警告：检测到不同测站 {station}(已有 {self.station_name})")
             self.station_name = self.station_name or station
-            label = _extract_date_label(obs_file) or station
-        else:
-            label = station
         for m in modules:
             if m not in self.modules_all:
                 self.modules_all.append(m)
-        self.station_rows.append((label, station_vals))
+        self.station_rows.append((station, date_label, station_vals))
 
     # ---------- 断点续跑：复用单文件汇总结果 ----------
     def _reuse_file_result(self, obs_file, sub_dir):
@@ -735,20 +736,25 @@ class MultiFileQC:
         print("   (检测到已有汇总结果，跳过重复计算)")
         return True
 
+    # ---------- 多站对比表 ----------
+    def write_comparison(self):
+        if not self.station_rows:
+            print("无有效 station 数据，跳过对比表输出")
+            return
+        out_file = os.path.join(self.args.output_dir, 'QCValue_comparison.csv')
+        ensure_dir(self.args.output_dir)
+        with open(out_file, 'w', newline = '') as f:
+            writer = csv.writer(f)
+            # 两种模式统一表头：station + date + 指标
+            writer.writerow(['station', 'date'] + self.modules_all)
+            for station, date_label, vals in self.station_rows:
+                writer.writerow([station, date_label or ''] +
+                                [vals.get(m, '') for m in self.modules_all])
+        print(f"-->质量统计表已保存至: {out_file}")
+
     def run(self, obs_files):
         comparison_file = os.path.join(self.args.output_dir, 'QCValue_comparison.csv')
         is_station = (getattr(self.args, 'mode', 'prn') in ('station', 'Sstation'))
-
-        # ============ 快速通道：QC 全关 + 已有对比表 ============
-        if self._all_modules_disabled():
-            if self._load_existing_comparison(comparison_file):
-                if getattr(self.args, 'evaluate', False):
-                    self.run_evaluate()
-                return
-            else:
-                print(f"--> QC模块关闭，但未找到有效的 {comparison_file}")
-                print("   请先运行一次完整 QC，或启用至少一个 QC 模块")
-                return
 
         # ============ 常规流程：逐文件跑 QC ============
         total = len(obs_files)
@@ -785,216 +791,13 @@ class MultiFileQC:
             self._collect_result(obs_file, station, station_vals, modules)
 
         # Sstation：按日期排序，形成时间序列
+
         if self.is_sstation:
-            self.station_rows.sort(key=lambda r: r[0])
+            self.station_rows.sort(key = lambda r: r[1] or '')
 
         # ---- 汇总多站对比 CSV ----
         self.write_comparison()
 
-        # ---- 跨站综合评价 ----
-        if getattr(self.args, 'evaluate', False):
-            self.run_evaluate()
-
         print(f"\n所有文件处理完成，结果保存在: {self.args.output_dir}")
 
-    # ---------- 多站对比表 ----------
-    def write_comparison(self):
-        if not self.station_rows:
-            print("无有效 station 数据，跳过对比表输出")
-            return
-        out_file = os.path.join(self.args.output_dir, 'QCValue_comparison.csv')
-        ensure_dir(self.args.output_dir)
-        with open(out_file, 'w', newline='') as f:
-            writer = csv.writer(f)
-            if self.is_sstation:
-                # 单站时间序列：station + date + 指标
-                writer.writerow(['station', 'date'] + self.modules_all)
-                for label, vals in self.station_rows:
-                    writer.writerow([self.station_name, label] +
-                                    [vals.get(m, '') for m in self.modules_all])
-            else:
-                writer.writerow(['station'] + self.modules_all)
-                for station, vals in self.station_rows:
-                    writer.writerow([station] +
-                                    [vals.get(m, '') for m in self.modules_all])
-        if self.is_sstation:
-            print(f"-->单站时间序列质量统计表已保存至: {out_file}")
-        else:
-            print(f"-->多站对比表已保存至: {out_file}")
 
-    # ---------- 跨站综合评价 ----------
-    def run_evaluate(self):
-        if len(self.station_rows) < 2:
-            unit = '日期' if self.is_sstation else 'station'
-            print(f" {unit} 数量少于 2，跳过综合评价")
-            return
-
-        print("\n-->跨日期综合评价(evaluate)" if self.is_sstation
-              else "\n-->跨站综合评价(evaluate)")
-        weight_method = getattr(self.args, 'eval_weight', 'entropy')
-        eval_method = getattr(self.args, 'eval_method', 'gra')
-        rho = getattr(self.args, 'eval_rho', 0.5)
-        lamb = getattr(self.args, 'eval_lambda', 0.5)
-        use_pca = getattr(self.args, 'pca', False)
-        pca_var = getattr(self.args, 'pca_var', 0.85)
-        pca_n = getattr(self.args, 'pca_n', None)
-        pca_report_file = None
-        if use_pca:
-            pca_report_file = os.path.join(
-                self.args.output_dir,
-                f'QCValue_eval_{weight_method}_{eval_method}_pca_report.csv'
-            )
-        stations = [s for s, _ in self.station_rows]
-        modules = self.modules_all
-        data = np.full((len(stations), len(modules)), np.nan, dtype=float)
-        for i, (_, vals) in enumerate(self.station_rows):
-            for j, m in enumerate(modules):
-                v = vals.get(m, '')
-                if v == '' or v is None:
-                    continue
-                try:
-                    data[i, j] = float(v)
-                except (ValueError, TypeError):
-                    pass
-        # ---- 有监督分支：spp3drms 作为标签，k-means + KNN ----
-        if getattr(self.args, 'eval_supervised', False):
-            self._run_evaluate_KKNN(stations, modules, data)
-            return
-
-        result = evaluate_matrix(
-            stations, modules, data,
-            weight_method=weight_method,
-            eval_method=eval_method,
-            rho=rho, lamb=lamb,
-            use_pca=use_pca,
-            pca_var_threshold=pca_var,
-            pca_n_components=pca_n,
-            pca_report_file = pca_report_file,
-        )
-        if result is None:
-            return
-
-        stations, modules, data_used, weights, scores, ranking = result
-        order = np.argsort(-scores)
-
-        # CSV 输出的列名自动反映是否使用了 PCA（PC1、PC2 ...）
-        out_file = os.path.join(
-            self.args.output_dir,
-            f'QCValue_eval_{weight_method}_{eval_method}'
-            f'{"_pca" if use_pca else ""}.csv'
-        )
-        with open(out_file, 'w', newline='') as f:
-            writer = csv.writer(f)
-            first_col = 'date' if self.is_sstation else 'station'
-            writer.writerow([first_col] + list(modules) + ['Score', 'Rank'])
-            for i in order:
-                raw_row = []
-                for v in data_used[i]:
-                    if np.isnan(v):
-                        raw_row.append('')
-                    elif np.isposinf(v):
-                        raw_row.append('inf')
-                    elif np.isneginf(v):
-                        raw_row.append('-inf')
-                    else:
-                        raw_row.append(f"{v:.4f}")
-                writer.writerow([stations[i]] + raw_row +
-                                [f"{scores[i]:.4f}", int(ranking[i])])
-            writer.writerow([])
-            writer.writerow(['Weight'] + [f"{w:.4f}" for w in weights] + ['', ''])
-
-        eval_title = '单站时间序列评估结果' if self.is_sstation else '多站评估结果'
-        row_name = 'date' if self.is_sstation else 'station'
-        print(f"\n===== {eval_title} [{weight_method} + {eval_method}"
-              f"{' + PCA' if use_pca else ''}] =====")
-        print("指标权重:")
-        for m, w in zip(modules, weights):
-            print(f"    {m:<14s} {w:.4f}")
-        print(f"    {row_name:<10s}{'Score':>12s}{'Rank':>8s}")
-        print("    " + "-" * 30)
-        for i in order:
-            print(f"    {stations[i]:<10s}{scores[i]:>12.4f}{int(ranking[i]):>8d}")
-        print(f"-->跨站评估结果已保存至: {out_file}")
-
-    def _run_evaluate_KKNN(self, stations, modules, data):
-        """有监督质量分级：spp3drms 作为标签，k-means + KNN。"""
-        print("\n-->跨日期有监督质量分级(k-means + KNN)" if self.is_sstation
-              else "\n-->跨站有监督质量分级(k-means + KNN)")
-
-        label_module = getattr(self.args, 'eval_label_module', 'spp3drms')
-        n_clusters   = getattr(self.args, 'eval_n_clusters', 10)
-        knn_k        = getattr(self.args, 'eval_knn_k', None)
-        use_pca      = getattr(self.args, 'pca', False)
-        pca_var      = getattr(self.args, 'pca_var', 0.95)
-        pca_n        = getattr(self.args, 'pca_n', None)
-
-        pca_report_file = None
-        if use_pca:
-            pca_report_file = os.path.join(
-                self.args.output_dir,
-                'QCValue_eval_KKNN_pca_report.csv'
-            )
-
-        result = evaluate_KKNN(
-            stations, list(modules), data,
-            label_module=label_module,
-            n_clusters=n_clusters,
-            knn_k=knn_k,
-            use_pca=use_pca,
-            pca_var_threshold=pca_var,
-            pca_n_components=pca_n,
-            pca_print=True,
-            pca_report_file=pca_report_file,
-        )
-        if result is None:
-            return
-
-        grades       = result['grades']
-        cluster_ids  = result['cluster_ids']
-        label_values = result['label_values']
-        feature_out  = result['feature_modules']
-        data_used    = result['data_used']
-        knn_k_final  = result['knn_k']
-        cv_acc       = result['knn_cv_acc']
-
-        out_file = os.path.join(
-            self.args.output_dir,
-            f'QCValue_eval_KKNN'
-            f'{"_pca" if use_pca else ""}.csv'
-        )
-        first_col = 'date' if self.is_sstation else 'station'
-        order = np.argsort(-grades)
-        with open(out_file, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow([first_col, 'grade', 'cluster', label_module]
-                            + list(feature_out))
-            for i in order:
-                row = [stations[i], int(grades[i])]
-                row.append(int(cluster_ids[i]) if cluster_ids[i] >= 0 else '')
-                v = label_values[i]
-                row.append('' if not np.isfinite(v) else f"{v:.4f}")
-                for val in data_used[i]:
-                    row.append('' if not np.isfinite(val) else f"{val:.4f}")
-                writer.writerow(row)
-            writer.writerow([])
-            writer.writerow(['# k-means clusters', n_clusters,
-                             'KNN k', knn_k_final,
-                             'CV acc',
-                             '' if not np.isfinite(cv_acc) else f"{cv_acc:.4f}"])
-
-        print(f"\n===== 有监督质量分级 [k-means + KNN]"
-              f"{' + PCA' if use_pca else ''} =====")
-        print(f"标签列: {label_module}    聚类数 k={n_clusters}    "
-              f"KNN n_neighbors={knn_k_final}")
-        if np.isfinite(cv_acc):
-            print(f"KNN 交叉验证平均准确率: {cv_acc * 100:.2f}%")
-        print(f"    {first_col:<10s}{'Grade':>8s}{'Cluster':>10s}"
-              f"{label_module:>14s}")
-        print("    " + "-" * 46)
-        for i in order:
-            cid = cluster_ids[i] if cluster_ids[i] >= 0 else -1
-            lv = label_values[i]
-            lv_s = 'N/A' if not np.isfinite(lv) else f"{lv:.4f}"
-            print(f"    {stations[i]:<10s}{int(grades[i]):>8d}"
-                  f"{cid:>10d}{lv_s:>14s}")
-        print(f"-->有监督分级结果已保存至: {out_file}")

@@ -30,10 +30,8 @@ from plot.plotCMC import plotCMC
 from plot.plotIOD import plotIOD
 from plot.plotFreq import plotFreq
 from plot.plotHighOrderDiff import plotHighOrderDiff
-from madm.EQCValue import evaluate_qcvalue
 
 matplotlib.use('Agg')
-
 
 # ========================= 辅助函数 =========================
 def parse_time(timestr):
@@ -265,95 +263,12 @@ class QCProcessor:
 
         print(f"-->汇总统计已保存至: {qc_value_file}")
 
-    # ---------- 综合评价 ----------
-    def run_evaluate(self):
-        """读取 _QCValue.csv，调用评估模块做 GRA/TOPSIS/WASPAS/INCOME 评估。
-        PCA 参数从命令行 args 读取，由 evaluate_qcvalue 内部执行降维。
-        """
-        csv_file = self._outpath('_QCValue.csv')
-        if not os.path.exists(csv_file):
-            print("未找到 _QCValue.csv，跳过评估")
-            return
-
-        print("-->综合评价(evaluate)")
-        weight_method = getattr(self.args, 'eval_weight', 'entropy')
-        eval_method = getattr(self.args, 'eval_method', 'gra')
-        rho = getattr(self.args, 'eval_rho', 0.5)
-        lamb = getattr(self.args, 'eval_lambda', 0.5)
-
-        # ----  PCA 参数 ----
-        use_pca = getattr(self.args, 'pca', False)
-        pca_var = getattr(self.args, 'pca_var', 0.85)
-        pca_n = getattr(self.args, 'pca_n', None)
-        pca_report_file = None
-        if use_pca:
-            pca_report_file = self._outpath(
-                f'_eval_{weight_method}_{eval_method}_pca_report.csv'
-            )
-        result = evaluate_qcvalue(
-            csv_file,
-            weight_method=weight_method,
-            eval_method=eval_method,
-            rho=rho, lamb=lamb,
-            use_pca=use_pca,
-            pca_var_threshold=pca_var,
-            pca_n_components=pca_n,
-            pca_report_file=pca_report_file,
-        )
-
-        if result is None:
-            return
-
-        prns, modules, data_used, weights, scores, ranking = result
-        order = np.argsort(-scores)
-
-        # ---- 保存评估结果 CSV（PCA 时列名自动变为 PC1、PC2 ...） ----
-        out_file = self._outpath(
-            f'_eval_{weight_method}_{eval_method}'
-            f'{"_pca" if use_pca else ""}.csv'
-        )
-        with open(out_file, 'w', newline = '') as f:
-            writer = csv.writer(f)
-            writer.writerow(['PRN'] + list(modules) + ['Score', 'Rank'])
-            for i in order:
-                raw_row = []
-                for v in data_used[i]:
-                    if np.isnan(v):
-                        raw_row.append('')
-                    elif np.isposinf(v):
-                        raw_row.append('inf')
-                    elif np.isneginf(v):
-                        raw_row.append('-inf')
-                    else:
-                        raw_row.append(f"{v:.4f}")
-                writer.writerow([prns[i]] + raw_row +
-                                [f"{scores[i]:.4f}", int(ranking[i])])
-            writer.writerow([])
-            writer.writerow(['Weight'] + [f"{w:.4f}" for w in weights] + ['', ''])
-
-        # ---- 终端打印 ----
-        print(f"\n===== 评估结果: {self.base_name} "
-              f"[{weight_method} + {eval_method}"
-              f"{' + PCA' if use_pca else ''}] =====")
-        print("指标权重:")
-        for m, w in zip(modules, weights):
-            print(f"    {m:<14s} {w:.4f}")
-        print(f"    {'PRN':<10s}{'Score':>12s}{'Rank':>8s}")
-        print("    " + "-" * 30)
-        for i in order:
-            print(f"    {prns[i]:<10s}{scores[i]:>12.4f}{int(ranking[i]):>8d}")
-        print(f"-->评估结果已保存至: {out_file}")
-
     # ---------- 主流程 ----------
     def process(self):
-        """执行完整 QC 流程：读数据 → 逐模块计算 → 汇总 → 综合评估"""
+        """执行完整 QC 流程：读数据 → 逐模块计算 → 汇总"""
         self.load_obs()
         for name in self.MODULES:
             if getattr(self.args, name, False):
                 getattr(self, f'run_{name}')()
                 plt.close('all')
         self.write_summary()
-
-        # 汇总完成后运行综合评价
-        if getattr(self.args, 'evaluate', False):
-            self.run_evaluate()
