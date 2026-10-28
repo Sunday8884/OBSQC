@@ -20,6 +20,38 @@ def obs_qc(args):
     else:
         # ============ PRN 模式 ============
         from qc.qc_engine import QCProcessor
+        from qc.qc_engine_exp import _extract_date_key
+        from com.readNav import readNav
+        import glob as _glob
+
+        # --nav 可选：提供后完整率模块可额外计算「理论可见」口径
+        nav_files = _glob.glob(args.nav) if args.nav else []
+        nav_cache = {}
+
+        def _nav_for(obs_file):
+            """按日期匹配导航文件（复用 station 模式的匹配规则）"""
+            if not nav_files:
+                return None
+            if len(nav_files) == 1:
+                key = nav_files[0]
+            else:
+                ok = _extract_date_key(obs_file)
+                key = None
+                if ok:
+                    for nf in nav_files:
+                        if _extract_date_key(nf) == ok:
+                            key = nf
+                            break
+                if key is None:
+                    key = nav_files[0]
+            if key not in nav_cache:
+                try:
+                    nav_cache[key] = readNav(key)
+                except Exception as e:
+                    print(f"警告：读取导航文件失败 {key}: {e}")
+                    nav_cache[key] = None
+            return nav_cache[key]
+
         total = len(obs_files)
         for idx, obs_file in enumerate(obs_files, 1):
             sub_dir = os.path.join(
@@ -33,7 +65,8 @@ def obs_qc(args):
                 print("   (检测到已有汇总结果，跳过重复计算)")
                 continue
             try:
-                QCProcessor(obs_file, sub_dir, args).process()
+                nav_data = _nav_for(obs_file) if nav_files else None
+                QCProcessor(obs_file, sub_dir, args, nav_data=nav_data).process()
             except Exception as e:
                 print(f"文件 {obs_file} 处理失败，已跳过: {e}")
                 continue
@@ -56,10 +89,13 @@ def create_parser():
     parser.add_argument("--systems", nargs="+", help="要处理的 GNSS 系统，例如 G C E")
     parser.add_argument("--satellites", nargs="+", help="卫星 PRN 列表，例如 G01 G02 C06")
     parser.add_argument("--bands", help="波段选择，例如 'G:1C,2W;C:2I,6I'")
+    parser.add_argument("--cutoff", type=float, default=10.0,
+                        help="理论可见性判定的截止高度角（度），默认 10；仅在提供 --nav 时生效")
 
     # 模块开关
     _add_toggle(parser, "satnum",     "卫星数量统计")
     _add_toggle(parser, "freq",       "频段统计")
+    _add_toggle(parser, "completeness", "卫星数据完整率统计")
     _add_toggle(parser, "cnr",        "载噪比分析")
     _add_toggle(parser, "slip",       "周跳检测")
     _add_toggle(parser, "phasenoise", "相位噪声计算")
