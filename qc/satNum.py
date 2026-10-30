@@ -15,6 +15,75 @@ satNumData = {
     }
 }
 """
+def countSatBySystem(obsData, systems=None, start_datetime=None, end_datetime=None):
+    """
+    逐历元统计各 GNSS 系统的可见卫星数。
+
+    systems 为允许统计的系统列表（来自 --systems / ALL_GNSS_SYSTEMS）：
+      - 列表中**具体系统**（G、C、E …）决定统计范围，范围外的系统不计入；
+      - 'ALL' 只是合计标记，不参与范围判定；当列表里除 'ALL' 外没有
+        具体系统时（如 --systems ALL），各系统列才统计所有出现的系统；
+      - 'ALL' 列**始终统计所有 PRN**（不过滤系统），与 _sat.txt 中
+        plotSatNum 的 ALL 口径一致。
+
+    返回 {epoch(datetime): {系统: 数量}}。
+    """
+    allow = None
+    if systems is not None:
+        concrete = {s for s in systems if s and s != 'ALL'}
+        # 只有 'ALL'（或空）时不限系统；否则按具体系统过滤
+        allow = concrete if concrete else None
+
+    out = {}
+    for ep in sorted(obsData.keys()):
+        if start_datetime and ep < start_datetime:
+            continue
+        if end_datetime and ep > end_datetime:
+            continue
+        counts = {}
+        total = 0
+        for prn in obsData[ep]:
+            total += 1
+            sys_char = prn[0]
+            if allow is not None and sys_char not in allow:
+                continue
+            counts[sys_char] = counts.get(sys_char, 0) + 1
+        if total:
+            counts['ALL'] = total
+            out[ep] = counts
+    return out
+
+
+def writeSatNumDetailed(satCount, detailFile):
+    """
+    将逐历元各系统卫星数写成宽表 CSV：
+        行 = 历元，列 = 各系统（如 C / G / E ...）及 ALL（所有 PRN 合计）
+    """
+    if not satCount:
+        return None
+
+    systems = []
+    for ep in satCount:
+        for sys in satCount[ep]:
+            if sys not in systems:
+                systems.append(sys)
+    # ALL 放在最后
+    systems = [s for s in systems if s != 'ALL']
+    if 'ALL' in satCount[next(iter(satCount))]:
+        systems.append('ALL')
+
+    with open(detailFile, 'w+', newline='') as f:
+        f.write(','.join(['epoch'] + systems) + '\n')
+        for ep in sorted(satCount.keys()):
+            epoch_str = ep.strftime('%Y-%m-%d %H:%M:%S') if hasattr(ep, 'strftime') else str(ep)
+            row = [epoch_str]
+            for sys in systems:
+                v = satCount[ep].get(sys, '')
+                row.append(str(v) if v != '' else '')
+            f.write(','.join(row) + '\n')
+    return detailFile
+
+
 def writeSatNum(satNumData, satNumFile):
     # SatNum[prn][satNum]
     satNumFileWrite = open(satNumFile, 'w+')

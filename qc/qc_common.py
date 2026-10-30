@@ -39,7 +39,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 from com.readObs import readObsHead, readObs
-from qc.satNum import writeSatNum
+from qc.satNum import writeSatNum, countSatBySystem, writeSatNumDetailed
 from qc.freq import writeFreqData
 from qc.CNR import writeCnr, writeCnrDetailed
 from qc.slip import turboedit, writeSlip, writeSlipDetailed
@@ -175,6 +175,9 @@ class QCProcessorBase:
         self.obs_data = None
         self.total_epochs = 0
         self.qc_value = {}
+        # freq 模块的原始频段计数 {prn: {L观测码: 次数}}，
+        # 供 time 模式做 SPP 频段的 PRN 级统计
+        self.freq_data = {}
 
     # ---------- 内部工具 ----------
     def _outpath(self, suffix):
@@ -204,6 +207,13 @@ class QCProcessorBase:
         )
         if satNumData:
             writeSatNum(satNumData, self._outpath('_sat.txt'))
+            # 另存逐历元各系统卫星数明细 CSV，统计范围与 --systems 一致
+            satCount = countSatBySystem(
+                self.obs_data,
+                systems=self._systems(),
+                start_datetime=self.start_dt, end_datetime=self.end_dt,
+            )
+            writeSatNumDetailed(satCount, self._outpath('_sat.csv'))
 
     def run_freq(self):
         print("-->统计频段使用情况(freq)")
@@ -218,6 +228,9 @@ class QCProcessorBase:
             d = writeFreqData(freqData, self._outpath('_freq.txt'),
                               total_epochs=self.total_epochs)
             self.qc_value.update(d)
+            # 保留原始频段计数 {prn: {L码: 次数}}，供 time 模式做
+            # SPP 频段的 PRN 级统计
+            self.freq_data = freqData
 
     def run_completeness(self):
         """统计卫星数据完整率（弧段口径），并识别连续缺测缺口。

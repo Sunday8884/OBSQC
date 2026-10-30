@@ -15,6 +15,7 @@ OBSQC/
 │   ├── qc_common.py        # 公共基础设施：QCProcessorBase 基类 + 波段归一化
 │   ├── qc_engine.py        # PRN 模式引擎：单文件 QC → PRN 级汇总
 │   ├── qc_engine_exp.py    # Station 模式引擎：多文件 QC → 测站级汇总 → SPP → 多站对比表
+│   ├── qc_time.py          # Time 模式引擎：多文件 QC → 逐历元时间序列 QCValue.csv
 │   ├── satNum.py / freq.py / completeness.py / CNR.py / slip.py / phasenoise.py /
 │   │   multipath.py / CMC.py / IOD.py / highOrderDiff.py   # 各 QC 指标计算与写文件
 ├── plot/                   # 各指标的绘图模块（plotSatNum / plotCnr / plotCycleSlip ...）
@@ -43,6 +44,10 @@ qc_common.QCProcessorBase          ← 共享骨架
 ├── qc_engine.QCProcessor          仅覆写输出：PRN 级 _QCValue.csv
 └── qc_engine_exp.QCProcessor      覆写输出：PRN 级 + 测站级 _QCValue_station.csv
     └── MultiFileQC                多文件编排 + QCValue_comparison.csv
+
+qc_time.TimeSeriesQC               复用 qc_engine_exp.QCProcessor 跑完单文件 QC，
+                                   再读各模块逐历元明细 CSV → 按 SPP 频段过滤
+                                   → 逐历元汇总 → QCValue.csv + QCValue_sppband.txt
 ```
 
 两个引擎的差异仅在输出组织；`qc_engine_exp.py` 额外承担 SPP（ENU 3D RMS、DOP 均值）
@@ -58,21 +63,29 @@ obsqc.py（解析参数）
    ├── mode = prn  ──► qc_engine.QCProcessor（逐文件循环）
    │                     读 RINEX → 逐 QC 模块 → _QCValue.csv（PRN 级）
    │
-   └── mode = station / Sstation ──► qc_engine_exp.MultiFileQC
-                         逐文件 QCProcessor（含 SPP）→ 每文件聚合成一行
-                         → QCValue_comparison.csv
-                           · station ：多站对比表（行=测站）
-                           · Sstation：单站时间序列表（行=日期，station+date 两列）
+   ├── mode = station / Sstation ──► qc_engine_exp.MultiFileQC
+   │                     逐文件 QCProcessor（含 SPP）→ 每文件聚合成一行
+   │                     → QCValue_comparison.csv
+   │                       · station ：多站对比表（行=测站）
+   │                       · Sstation：单站时间序列表（行=日期，station+date 两列）
+   │
+   └── mode = time ──► qc.qc_time.TimeSeriesQC
+                         逐文件 QCProcessor（含 SPP）→ 读取各模块逐历元明细 CSV
+                         → 按「SPP 实际选用频段」过滤 → 逐历元汇总
+                         → QCValue_<标签>.csv（行=历元）+ QCValue_sppband.txt
+                         → --sat 时另出 QCValue_<sat>_<标签>.csv（按频段分列）
 ```
 
-### 2.1 三种模式对比
+### 2.1 四种模式对比
 
-| 项目 | prn 模式（默认） | station 模式 | Sstation 模式 |
-|---|---|---|---|
-| 引擎 | `qc/qc_engine.py` | `qc/qc_engine_exp.py` | `qc/qc_engine_exp.py` |
-| 评估对象 | 单文件内各卫星 PRN | 多个测站 | 同一测站的多个日期 |
-| SPP 定位 | 不支持 | 支持（需 `--nav`，可选 `--snx`） | 支持（同 station） |
-| 汇总输出 | `<name>_QCValue.csv`（PRN×指标） | `QCValue_comparison.csv`（行=测站） | `QCValue_comparison.csv`（行=日期，`station,date` 两列，按日期排序） |
+| 项目 | prn 模式（默认） | station 模式 | Sstation 模式 | time 模式 |
+|---|---|---|---|---|
+| 引擎 | `qc/qc_engine.py` | `qc/qc_engine_exp.py` | `qc/qc_engine_exp.py` | `qc/qc_time.py` |
+| 评估对象 | 单文件内各卫星 PRN | 多个测站 | 同一测站的多个日期 | 单站多日期的**逐历元**时序 |
+| SPP 定位 | 不支持 | 支持（需 `--nav`，可选 `--snx`） | 支持（同 station） | 支持（同 station） |
+| 汇总输出 | `<name>_QCValue.csv`（PRN×指标） | `QCValue_comparison.csv`（行=测站） | `QCValue_comparison.csv`（行=日期，`station,date` 两列，按日期排序） | `QCValue_<标签>.csv`（行=历元）+ `QCValue_sppband.txt` |
+| 频段范围 | 全部 | 全部 | 全部 | **仅 SPP 实际选用的频段** |
+| 选星输出 | 无 | 无 | 无 | `--sat` → `QCValue_<sat>_<标签>.csv`（按频段分列） |
 
 > **关于综合评价**：MADM 综合评价（正向化 → 预处理 → PCA → 权重 → 评价）已从本仓库拆出，
 > 由独立项目读取本工具产出的 `_QCValue.csv` / `QCValue_comparison.csv` 完成。
@@ -88,11 +101,105 @@ obsqc.py（解析参数）
    - 同模块跨 PRN 取均值 → 测站级 `_QCValue_station.csv`（仅 station 模式）；
 5. **综合评价**（可选）。
 
+### 2.2.1 time 模式：逐历元时间序列
+
+`time` 模式在上述 QC 流程之后追加一步「明细归并」：
+
+```
+各模块逐历元明细 CSV                SPP 选段（_sppband.csv）
+_cnr.csv  _slip.csv  _multipath.csv      C: C2I+C6I
+_cmc.csv  _iod.csv  _phasenoise.csv      E: C1C+C5Q
+_highOrderDiff.csv  _completeness.csv    G: C1C+C2W
+        │                                      │
+        └──────── 频段过滤（只保留 SPP 频段）───┘
+                          │
+                          ▼
+              逐历元汇总为一行（均值/RMS/计数）
+                          │
+                          ▼
+        QCValue.csv（行=历元） + QCValue_sppband.txt
+```
+
+要点：
+
+- **频段过滤**：各模块明细 CSV 的列名形如 `C19_C2I` / `C19_L2I` / `C05_S2I`，
+  去掉观测类型前缀后得到频段键（`2I`），只保留 SPP 选段涉及的频段键；
+  非 SPP 频点的列整列丢弃。
+- **时间轴**：`Epoch` 取各模块 CSV 中的实际时间戳；`Idx` 为相对时间原点的
+  采样序号，原点默认取**数据中最早的历元**（`--time_origin` 可指定），
+  采样间隔由实际时间戳的中位差分推导（`--time_interval` 可覆盖）。
+- **统计量**：CNR 取均值/最小值；多路径/CMC/IOD/相位噪声/高阶差分取 RMS/峰值；
+  周跳与完整率取非零计数/有效样本数。每列都带 `_n` 有效样本数。
+- **SPP 频段统计汇总**（`QCValue_sppband.txt`）：各系统 SPP 选段的观测码对、
+  中心频率、Δf、λW、MW 放大倍数，以及逐 PRN 的该频段观测次数与有效率。
+
+#### 2.2.2 time 模式的文件命名与选星参数
+
+**标签（`<标签>`）**：由各系统的「系统字母 + SPP 选段各码的频段键」组成，
+系统内**双频用 `_` 连接**，各系统之间也用 `_` 连接，系统按字母序排列。
+系统字母只与第一个频段键直接相连（保持 `C2I` 这样的完整形式）：
+
+| 系统 | SPP 选段 | 标签 |
+|---|---|---|
+| BDS | `C2I` + `C6I` | `C2I_6I` |
+| Galileo | `C1C` + `C5Q` | `E1C_5Q` |
+| GPS | `C1C` + `C2W` | `G1C_2W` |
+
+三种系统共存时，全局标签为 `C2I_6I_E1C_5Q_G1C_2W`：
+
+| 文件 | 内容 |
+|---|---|
+| `QCValue_C2I_6I_E1C_5Q_G1C_2W.csv` | 全卫星逐历元时间序列（各频段合并统计） |
+| `QCValue_C19_C2I_6I.csv` | 单星（C19，BDS 系统）逐历元时间序列 |
+| `QCValue_G01_G1C_2W.csv` | 单星（G01，GPS 系统）逐历元时间序列 |
+| `QCValue_sppband.txt` | SPP 频段统计汇总（不带标签，全局唯一） |
+
+单星文件的标签只取**该星所属系统**的标识，因此不同系统的同名卫星不会冲突。
+
+**选星参数 `--sat`**（仅 time 模式）：为指定的每颗卫星单独输出一份时间序列表。
+
+```bash
+python obsqc.py --mode time \
+    --input_obs "./test/data/*.24o" \
+    --nav "./test/data/*.24p" \
+    --output_dir ./test/qc_time \
+    --sat C19 G01
+```
+
+单星表的统计口径与全星表**不同**：单星表**按频段分列**，双频各出一组统计量，
+不做跨频段平均；与频段无关的指标（周跳 CSR 等）只出一列，不带频段后缀：
+
+```
+CNR_2I      CNR_6I                   ← B1 / B3 频段（B2I / B3I）
+CSR                                ← 周跳按卫星整体判定，与频段无关
+MP_2I        MP_6I              ← 多路径 RMS
+CMC_2I       CMC_6I             ← CMC RMS
+COMP                             ← 弧段完整率(0~1)，不按频段分列，各行取值相同
+SAT                             ← 统计范围内各系统卫星数之和
+SPP_E   SPP_N   SPP_U   SPP_3D   ← 整站量，置于最右
+```
+
+每个模块只出**一列主统计量**，列名不带统计量后缀：
+
+| 模块 | 统计量 | 列名示例 |
+|---|---|---|
+| CNR | 均值 | `CNR` / `CNR_2I` |
+| MP / CMC / IOD / PN / HOD | RMS | `MP` / `MP_2I` |
+| CSR | 计数 | `CSR` |
+| COMP | 弧段完整率 (0~1) | `COMP`（不按频段分列） |
+| SAT | 卫星数之和 | `SAT`（不按频段分列） |
+
+时间列为 `Epoch`（实际时间戳）与 `Idx`（采样序号），不含相对秒数。
+
+`--sat` 与 `--satellites` 的区别：`--satellites` 会**过滤各 QC 模块本身的计算
+范围**（影响所有输出文件），`--sat` 只影响**单星汇总表**的生成，不改变全星表
+与各模块明细。若某颗星在 SPP 频段内无数据，则跳过其单星表并给出提示。
+
 ### 2.3 QC 指标模块
 
 | 模块开关 | 含义 | 输出文件后缀 |
 |---|---|---|
-| `--satnum` | 卫星数量统计 | `_sat.png/.txt` |
+| `--satnum` | 卫星数量统计 | `_sat.png/.txt/.csv` |
 | `--freq` | 频段利用率统计 | `_freq.png/.txt` |
 | `--completeness` | 卫星数据完整率统计 | `_completeness.png/.txt/.csv`、`_gaps.png` |
 | `--cnr` | 载噪比分析 | `_cnr.png/.txt/.csv` |
@@ -359,15 +466,28 @@ python obsqc.py --mode prn \
     --output_dir ./test/qc \
     --no-satnum --no-freq --no-cnr --no-slip --no-phasenoise \
     --no-multipath --no-cmc --no-iod --no-highOrderDiff
+
+# time 模式：逐历元时间序列（只统计 SPP 实际选用频段的相关数据）
+python obsqc.py --mode time \
+    --input_obs "./test/data/*.24o" \
+    --nav "./test/data/*.24p" \
+    --output_dir ./test/qc_time
+
+# time 模式 + 选星：额外输出单星汇总表 _QCValue_C19_C2I.csv
+python obsqc.py --mode time \
+    --input_obs "./test/data/*.24o" \
+    --nav "./test/data/*.24p" \
+    --output_dir ./test/qc_time \
+    --sat C19 G01
 ```
 
 ### 3.2 主要参数
 
 | 参数 | 说明 |
 |---|---|
-| `--mode` | `prn`（默认）/ `station` / `Sstation`（单站多日期时间序列） |
+| `--mode` | `prn`（默认）/ `station` / `Sstation`（单站多日期时间序列）/ `time`（逐历元时间序列） |
 | `--input_obs` | RINEX 观测文件路径，**必填**，支持通配符 |
-| `--nav` | 广播星历文件（通配符）。station 模式用于 SPP；两种模式均用于完整率的"理论可见"口径 |
+| `--nav` | 广播星历文件（通配符）。station/time 模式用于 SPP；三种模式均用于完整率的"理论可见"口径 |
 | `--snx` | SINEX 周解文件，提供 ENU 参考坐标（仅 station 模式） |
 | `--cutoff` | 理论可见性判定的截止高度角（度），默认 `10`；仅在提供 `--nav` 时生效 |
 | `--output_dir` | 输出根目录，默认 `./qc` |
@@ -375,6 +495,9 @@ python obsqc.py --mode prn \
 | `--systems` | GNSS 系统筛选，如 `G C E` |
 | `--satellites` | 卫星筛选，如 `G01 G02 C06` |
 | `--bands` | 波段筛选，格式 `"G:1C,2W;C:2I,6I"` |
+| `--sat` | 选星参数（**仅 time 模式**），如 `C19 G01`。为指定的每颗卫星单独输出 `_QCValue_<sat>_<标签>.csv`，不改变全星表与各模块明细 |
+| `--time_origin` | time 模式时间原点；留空则由数据中最早的**实际历元**自动推导 |
+| `--time_interval` | time 模式采样间隔（秒）；留空则由实际时间戳的中位差分推导 |
 
 ### 3.3 一键脚本
 
@@ -385,7 +508,7 @@ python obsqc.py --mode prn \
 cd /f/OBSQC && bash obsqc.sh
 ```
 
-脚本会自动拼装命令行：`--nav`/`--snx` 仅在 station 模式注入。
+脚本会自动拼装命令行：`--nav`/`--snx` 仅在 station/Sstation/time 模式注入。
 
 ---
 
@@ -399,10 +522,61 @@ cd /f/OBSQC && bash obsqc.sh
 │   ├── <obs_name>_sat.png / _freq.png / _cnr.png ...     # 各模块图
 │   ├── <obs_name>_cnr.txt / _cnr.csv ...                 # 统计文本与明细
 │   ├── <obs_name>_QCValue.csv                            # PRN×指标汇总
-│   ├── <obs_name>_QCValue_station.csv                    # 测站级单行（station 模式）
-│   ├── <obs_name>_spp.txt / _spp.png                     # SPP 结果（station 模式）
-├── QCValue_comparison.csv                                # 多站对比表（station 模式）
+│   ├── <obs_name>_QCValue_station.csv                    # 测站级单行（station/Sstation/time 模式）
+│   ├── <obs_name>_spp.txt / _spp.png                     # SPP 结果（station/Sstation/time 模式）
+│   ├── <obs_name>_sppband.csv                            # SPP 选段记录（time 模式）
+│   ├── <obs_name>_sppband_freq.csv                       # SPP 频段逐 PRN 观测计数（time 模式）
+├── QCValue_comparison.csv                                # 多站对比表（station/Sstation 模式）
+├── QCValue_<标签>.csv                                    # 逐历元时间序列（time 模式，全卫星合并统计）
+├── QCValue_<sat>_<标签>.csv                              # 单星逐历元时间序列（time 模式，--sat，按频段分列）
+├── QCValue_sppband.txt                                   # SPP 频段统计汇总（time 模式）
 ```
+
+time 模式的 `QCValue_<标签>.csv`（全卫星）表头：
+
+| 列 | 含义 |
+|---|---|
+| `STATION` | 测站名，取观测文件名的**前 4 位**（大写），逐历元标记数据来源 |
+| `Epoch` | 实际时间戳（取自各模块明细 CSV） |
+| `Idx` | 采样序号 = 相对时间原点秒数 / 采样间隔 |
+| `CNR` | 载噪比均值 (dB-Hz) |
+| `CSR` | 周跳次数 |
+| `MP` | 多路径 RMS (m) |
+| `CMC` | 历元间差分码减相位 RMS (m) |
+| `IOD` | 电离层延迟变化率 RMS |
+| `PN` | 相位噪声 RMS |
+| `HOD` | 载波相位高阶差分 RMS |
+| `COMP` | 弧段完整率 (0~1)，整段弧段统计量，各行取值相同；单星表为该星各频段均值 |
+| `SAT` | 逐历元统计范围内各系统的可见卫星数之和（`--systems` 限定单系统时即该系统数量） |
+| `SPP_E` / `SPP_N` / `SPP_U` | 逐历元单点定位的东/北/天残差 (m)，相对参考原点 |
+| `SPP_3D` | 逐历元三维误差 sqrt(E²+N²+U²) (m) |
+
+SPP 与卫星数量都是**整站量**，与卫星无关，因此全星表与单星表的这些列取值相同。
+SPP 结果取自各文件的 `_spp.txt`，卫星数量取自 `_sat.csv`（未提供 `--nav`
+或对应模块未启用时无相应列）。
+
+> **完整率的口径**：分母为该星**实际可见**的历元数，且按**连续可见段**切分——
+> 卫星中途长时间消失（换星座、遮挡、信号中断）后又重新出现时，中间不可见期
+> 不计入分母。否则该段会被误判为缺测，把完整率严重拉低（实测 C19 实际可见
+> 1165 历元，若跨越 878 历元的中断只算出 57%，实际应为 99.7%）。
+
+> **卫星数量的系统口径**：`_sat.csv` 的各系统列统计范围**与 `--systems` 一致**——
+> 只统计被选中的系统；而其 `ALL` 列**统计所有 PRN**（不过滤系统），
+> 与 `_sat.txt` / `_sat.png` 中 `plotSatNum` 的 ALL 口径一致。
+> 默认系统列表为 `G C R E L S J W`（不含 BeiDou-3 惯性解 `I`），
+> 故默认下各系统列之和小于 `ALL`。
+>
+> 汇总表 `QCValue_*.csv` 只出**一列 `SAT`**，取值为统计范围内各系统之和
+> （不含 `ALL`）；`--systems` 限定单个系统时，即为该系统的卫星数。
+
+单星表 `QCValue_<sat>_<标签>.csv` 的列名在此基础上**按频段分列**（后缀为频段键），
+与频段无关的指标不带后缀，详见 2.2.2 节。
+
+> **例外：`COMP` 与 `SAT` 不按频段分列**
+> - `COMP`（完整率）是**整段弧段**的统计量，双频取值几乎相同
+>   （例：C19 的 L2I 56.79% / L6I 56.94%），拆列无意义，故只出一列，
+>   值为该星各频段完整率的均值
+> - `SAT`（卫星数）同理，只出一列，取统计范围内各系统之和
 
 ## 5. 依赖
 
@@ -412,6 +586,6 @@ cd /f/OBSQC && bash obsqc.sh
 
 ## 6. 备注
 
-- 断点续跑：station/Sstation 模式下，若文件子目录中已有 `<name>_QCValue_station.csv`，重跑时直接读取该结果计入对比表并跳过计算（prn 模式检查 `<name>_QCValue.csv`）；坏文件只警告跳过，不中断整批。如需强制重算，删除对应子目录或汇总文件即可。
+- 断点续跑：station/Sstation 模式下，若文件子目录中已有 `<name>_QCValue_station.csv`，重跑时直接读取该结果计入对比表并跳过计算（prn 模式检查 `<name>_QCValue.csv`）；time 模式检查 `<name>_QCValue_station.csv` + `<name>_sppband.csv`，两者都在才跳过；只有前者时仅重算 SPP 选段（只读观测头，不重跑 QC 模块）。坏文件只警告跳过，不中断整批。如需强制重算，删除对应子目录或汇总文件即可。
 - 综合评价需要至少 2 个评估对象（测站/PRN），否则自动跳过。
 - 文件匹配导航星历依赖文件名中的年积日编码（如 `wuh20050.24o` ↔ `wuh20050.24p`）。

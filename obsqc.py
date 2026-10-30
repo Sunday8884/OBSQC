@@ -13,7 +13,11 @@ def obs_qc(args):
     mode = getattr(args, 'mode', 'prn')
     print(f"处理模式: {mode}")
 
-    if mode in ('station', 'Sstation'):
+    if mode == 'time':
+        # ===== time 模式：逐历元时间序列 =====
+        from qc.qc_time import TimeSeriesQC
+        TimeSeriesQC(args).run(obs_files)
+    elif mode in ('station', 'Sstation'):
         # ===== Station / Sstation 模式（均走多文件引擎） =====
         from qc.qc_engine_exp import MultiFileQC
         MultiFileQC(args).run(obs_files)
@@ -79,18 +83,31 @@ def _add_toggle(parser, name, help_text):
 
 def create_parser():
     parser = argparse.ArgumentParser(description="GNSS 观测数据质量检查（QC + SPP，不含综合评价）")
-    parser.add_argument("--mode", default="prn", choices=["prn", "station", "Sstation"], help="处理模式：prn=逐文件卫星评估；station=跨文件测站评估；Sstation=单站多日期文件，生成时间序列质量统计")
+    parser.add_argument("--mode", default="prn", choices=["prn", "station", "Sstation", "time"],
+                        help="处理模式：prn=逐文件卫星评估；station=跨文件测站评估；"
+                             "Sstation=单站多日期时间序列；time=逐历元时间序列"
+                             "（仅统计 SPP 实际选用频段）")
     parser.add_argument("--input_obs", required=True, help="输入 RINEX 观测文件路径（支持通配符）")
-    parser.add_argument("--nav", help="广播星历导航文件（支持通配符），仅 station 模式下用于计算 SPP")
+    parser.add_argument("--nav", help="广播星历导航文件（支持通配符），station/time 模式用于计算 SPP")
     parser.add_argument("--snx", default=None, help="SINEX 周解文件（支持通配符），仅 station 模式有效，提供 ENU 参考")
     parser.add_argument("--output_dir", default="./qc", help="输出根目录（默认: ./qc）")
     parser.add_argument("--start", help="起始时间（YYYY-MM-DD HH:MM:SS）")
     parser.add_argument("--end", help="结束时间（YYYY-MM-DD HH:MM:SS）")
     parser.add_argument("--systems", nargs="+", help="要处理的 GNSS 系统，例如 G C E")
     parser.add_argument("--satellites", nargs="+", help="卫星 PRN 列表，例如 G01 G02 C06")
+    parser.add_argument("--sat", nargs="+",
+                        help="选星参数（仅 time 模式）：为指定的每颗卫星单独输出"
+                             "单星时间序列表 _QCValue_<sat>_<频段标识>.csv，"
+                             "如 --sat C05")
     parser.add_argument("--bands", help="波段选择，例如 'G:1C,2W;C:2I,6I'")
     parser.add_argument("--cutoff", type=float, default=10.0,
                         help="理论可见性判定的截止高度角（度），默认 10；仅在提供 --nav 时生效")
+    parser.add_argument("--time_origin", default=None,
+                        help="time 模式时间原点（YYYY-MM-DD HH:MM:SS），"
+                             "用于 Idx 序号计算；留空则由数据中最早的"
+                             "实际历元自动推导")
+    parser.add_argument("--time_interval", type=float, default=None,
+                        help="time 模式采样间隔（秒）；留空则由实际时间戳中位差分推导")
 
     # 模块开关
     _add_toggle(parser, "satnum",     "卫星数量统计")
@@ -103,7 +120,7 @@ def create_parser():
     _add_toggle(parser, "cmc",        "CMC 计算")
     _add_toggle(parser, "iod",        "IOD 计算")
     _add_toggle(parser, "highOrderDiff",  "高阶差分噪声计算")
-    _add_toggle(parser, "spp", "SPP计算,仅 station 模式生效")
+    _add_toggle(parser, "spp", "SPP计算,仅 station/Sstation/time 模式生效")
 
     return parser
 

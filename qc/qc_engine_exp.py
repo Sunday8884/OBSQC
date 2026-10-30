@@ -141,6 +141,8 @@ class QCProcessor(QCProcessorBase):
 
     def __init__(self, obs_file, out_dir, args, nav_data=None):
         super().__init__(obs_file, out_dir, args, nav_data=nav_data)
+        # SPP 实际选用的频段（{sys: {伪距观测码: {}}}），供 time 模式做频段过滤
+        self.spp_band_choose = None
 
     # ---------- SPP 模块 ----------
     def _build_spp_band_choose(self):
@@ -298,6 +300,17 @@ class QCProcessor(QCProcessorBase):
         dop_mean = float(np.mean(dop_vals)) if dop_vals else None
         return rms_3d, dop_mean
 
+    def resolve_spp_band_choose(self):
+        """计算并缓存 SPP 选段结果 {sys: {伪距观测码: {}}}。
+
+        与是否真正执行 SPP 解算无关：time 模式需要用该选段结果
+        对各模块明细 CSV 做频段过滤，因此即使没有星历、SPP 未开启，
+        也要把选段算出来。
+        """
+        if self.spp_band_choose is None:
+            self.spp_band_choose = self._build_spp_band_choose()
+        return self.spp_band_choose
+
     def run_spp(self):
         """station 模式：计算本文件的 SPP，并将 ENU3DRMS、DOP 均值加入 qc_value。
 
@@ -316,7 +329,7 @@ class QCProcessor(QCProcessorBase):
             return
 
         print("-->计算SPP")
-        band_choose = self._build_spp_band_choose()
+        band_choose = self.resolve_spp_band_choose()
         if not band_choose:
             print("--> 跳过 SPP：无可用波段")
             return
@@ -442,11 +455,14 @@ class QCProcessor(QCProcessorBase):
         self.load_obs()
         self.run_modules()
 
-        # ---- SPP 仅在 station/Sstation 模式 + 开关开启时计算 ----
-        if (getattr(self.args, 'mode', 'prn') in ('station', 'Sstation')
-                and getattr(self.args, 'spp', True)):
-            self.run_spp()
-            plt.close('all')
+        # ---- SPP 仅在 station/Sstation/time 模式 + 开关开启时计算 ----
+        mode = getattr(self.args, 'mode', 'prn')
+        if mode in ('station', 'Sstation', 'time'):
+            # 选段结果与是否解算无关：time 模式要用它过滤明细 CSV 的频段
+            self.resolve_spp_band_choose()
+            if getattr(self.args, 'spp', True):
+                self.run_spp()
+                plt.close('all')
 
         return self.write_summary()
 

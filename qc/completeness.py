@@ -13,10 +13,16 @@
 对每颗卫星 PRN 及其每个选定频段 band（**载波观测码全称**，如 'L2I'）：
 
   presence arc（可见弧段）
-      = 该 PRN 首个「有值历元」~ 最后一个「有值历元」之间的所有历元。
+      = 该 PRN **实际有值**的历元集合，按连续段切分后各段历元数之和。
       PRN「有值」定义：该历元中该 PRN 至少有一个观测码的数值非 None。
       弧段之外的历元视为「卫星不可见」，不计入缺测。
       （这是本模块与 freq 模块的关键区别）
+
+      **为什么按连续段切分**：卫星可能在时段中途长时间消失（接收机换星座、
+      遮挡、信号中断等）后又重新出现。若仍按「首个有值 ~ 末个有值」取弧段，
+      中间的长时间不可见期会被计入分母，把完整率严重拉低——实测 C19 实际
+      有值 1165 历元，却因跨越 878 历元的中断而只算出 56.8%。
+      切分后其完整率为 99% 左右，才反映真实的数据质量。
 
   频段分组粒度 = 频点号 + 跟踪模式（band key，如 '2I'），**不跨跟踪模式合并**。
   例如 GPS 的 L1C / L1W / L1X 分列为三行，各自独立统计完整率。
@@ -250,6 +256,45 @@ def _visible_epochs(nav_data, obs_head, prn, epochs, cutoff_deg):
 
 
 # ========================= 主计算 =========================
+def _split_present_segments(epochs, present_set, max_gap_epochs=1):
+    """
+    将卫星的「有值历元」按连续段切分。
+
+    卫星可能在时段中途长时间消失（接收机换星座、遮挡、信号中断等），
+    之后又重新出现。此时若仍按「首个有值 ~ 末个有值」取弧段，
+    中间的长时间不可见期会被计入分母，把完整率严重拉低
+    （例如 C19 可见 1165 历元、却因跨越 878 历元的中断而只算出 57%）。
+
+    参数
+    ----
+    epochs          : 全部历元（时间序）
+    present_set     : 该星有值的历元集合
+    max_gap_epochs  : 允许的最大间断历元数，超过则切分为两段
+
+    返回
+    ----
+    [(段内历元列表), ...]，按时间顺序。
+    """
+    if not present_set:
+        return []
+    present_eps = sorted(present_set)
+    segments = []
+    cur = [present_eps[0]]
+    for ep in present_eps[1:]:
+        # 两历元在 epochs 中的索引间隔
+        try:
+            gap = epochs.index(ep) - epochs.index(cur[-1]) - 1
+        except ValueError:
+            gap = 0
+        if gap > max_gap_epochs:
+            segments.append(cur)
+            cur = [ep]
+        else:
+            cur.append(ep)
+    segments.append(cur)
+    return segments
+
+
 def computeCompleteness(obsHead, obsData, start_datetime=None, end_datetime=None,
                         sat_list=None, sys_list=None, band_choose=None,
                         nav_data=None, cutoff=10.0, gap_min_epochs=2,
@@ -336,10 +381,15 @@ def computeCompleteness(obsHead, obsData, start_datetime=None, end_datetime=None
         if not bands:
             continue
 
-        # ---- 可见弧段：首个有值历元 ~ 最后一个有值历元 ----
-        arc_start = present[0]
-        arc_end = present[-1]
-        arc_epochs = [ep for ep in epochs if arc_start <= ep <= arc_end]
+        # ---- 可见弧段 ----
+        # 卫星可能中途长时间消失后重新出现，此时按「首个有值 ~ 末个有值」
+        # 取弧段会把中间的不可见期计入分母，严重拉低完整率。
+        # 故按连续可见段切分，分母 = 各可见段内的历元数之和。
+        segments = _split_present_segments(epochs, set(present))
+        if not segments:
+            continue
+        seg_epoch_sets = [set(s) for s in segments]
+        arc_epochs = [ep for ep in epochs if any(ep in s for s in seg_epoch_sets)]
         arc_n = len(arc_epochs)
         if arc_n == 0:
             continue
@@ -400,10 +450,12 @@ def computeCompleteness(obsHead, obsData, start_datetime=None, end_datetime=None
             n_present = sum(1 for ep in arc_epochs if ep in present_set)
 
             # 该频段自身的跨度（首个有值历元 ~ 末个有值历元）
+            # 同样按可见段切分，避免跨越中断期
             band_eps = [ep for ep in arc_epochs if band_mark[ep]]
             if band_eps:
-                span_n = sum(1 for ep in arc_epochs
-                             if band_eps[0] <= ep <= band_eps[-1])
+                band_seg_sets = _split_present_segments(
+                    arc_epochs, set(band_eps))
+                span_n = sum(len(s) for s in band_seg_sets)
                 ratio_span = n_band / span_n if span_n else 0.0
             else:
                 span_n = 0
@@ -571,7 +623,11 @@ def writeCompletenessDetailed(compData, obsData, obsHead, detailFile,
                 present_eps.append(ep)
         if not present_eps:
             continue
-        arc = [ep for ep in epochs if present_eps[0] <= ep <= present_eps[-1]]
+        # 弧段按连续可见段切分（与 computeCompleteness 一致）：
+        # 卫星中途长时间消失后再出现时，中间不可见期不计入分母
+        segments = _split_present_segments(epochs, set(present_eps))
+        seg_sets = [set(s) for s in segments]
+        arc = [ep for ep in epochs if any(ep in s for s in seg_sets)]
 
         m = {}
         cur_start = None
