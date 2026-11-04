@@ -274,7 +274,7 @@ def writeMp(mpData, mpFile):
                     rms = math.sqrt(square_sum / len(data['mp']))
                     line = f" {prn}_{band} {rms:10.4f} {min(data['mp']):10.4f} {max(data['mp']):10.4f}\n"
                     f.write(line)
-                    summary_dict.setdefault('multipath', {}).setdefault(prn, {})[band] = {'val':rms}
+                    summary_dict.setdefault('MP', {}).setdefault(prn, {})[band] = {'val':rms}
         f.write(38*'-' + '\n')
         f.write('-SAT\n')
     return summary_dict

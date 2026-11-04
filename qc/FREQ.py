@@ -47,7 +47,7 @@ def writeFreqData(freqData, freqFile, total_epochs = 2880):
             line += ' ' + freq + ': ' + '%7d' % count
             # 出现频率 = count / total_epochs
             freq_val = count / total_epochs
-            summary_dict.setdefault('freq', {}).setdefault(prn, {})[freq] = {'val': freq_val}
+            summary_dict.setdefault('FREQ', {}).setdefault(prn, {})[freq] = {'val': freq_val}
         line += '\n'
         satLines.append(line)
     satLines.append('-SAT\n')

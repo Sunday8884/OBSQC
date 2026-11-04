@@ -39,27 +39,27 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 from com.readObs import readObsHead, readObs
-from qc.satNum import writeSatNum, countSatBySystem, writeSatNumDetailed
-from qc.freq import writeFreqData
+from qc.SAT import writeSatNum, countSatBySystem, writeSatNumDetailed
+from qc.FREQ import writeFreqData
 from qc.CNR import writeCnr, writeCnrDetailed
-from qc.slip import turboedit, writeSlip, writeSlipDetailed
-from qc.phasenoise import phaseNoise, writePhaseNoise, writePhaseNoiseDetailed
-from qc.multipath import multipath, writeMp, writeMpDetailed
+from qc.SLIP import turboedit, writeSlip, writeSlipDetailed
+from qc.PN import phaseNoise, writePhaseNoise, writePhaseNoiseDetailed
+from qc.MP import multipath, writeMp, writeMpDetailed
 from qc.CMC import CMC, writeCmc, writeCmcDetailed
 from qc.IOD import IOD, writeIon, writeIonDetailed
-from qc.highOrderDiff import getObsHighOrderDiff, writeHod, writeHodDetailed
-from qc.completeness import (computeCompleteness, writeCompleteness,
+from qc.HOD import getObsHighOrderDiff, writeHod, writeHodDetailed
+from qc.COMP import (computeCompleteness, writeCompleteness,
                               writeCompletenessDetailed)
-from plot.plotSatNum import plotSatNum
-from plot.plotCnr import plotCnr
-from plot.plotCycleSlip import plotCycleSlip
-from plot.plotnoise import plotPhaseNoise
-from plot.plotMultipath import plotMultipath
+from plot.plotSAT import plotSatNum
+from plot.plotCNR import plotCnr
+from plot.plotSLIP import plotCycleSlip
+from plot.plotPN import plotPhaseNoise
+from plot.plotMP import plotMultipath
 from plot.plotCMC import plotCMC
 from plot.plotIOD import plotIOD
-from plot.plotFreq import plotFreq
-from plot.plotHighOrderDiff import plotHighOrderDiff
-from plot.plotCompleteness import (plotCompleteness, plotCompletenessTimeline)
+from plot.plotFREQ import plotFreq
+from plot.plotHOD import plotHighOrderDiff
+from plot.plotCOMP import (plotCompleteness, plotCompletenessTimeline)
 
 # RINEX 观测类型前缀：用于把频段键还原为完整观测码
 OBS_TYPE_PREFIXES = ('L', 'C', 'P', 'D', 'S')
@@ -201,31 +201,31 @@ class QCProcessorBase:
         print("-->统计卫星数量(sat)")
         satNumData = plotSatNum(
             self.obs_data,
-            pngFile=self._outpath('_sat.png'),
+            pngFile=self._outpath('_SAT.png'),
             start_datetime=self.start_dt, end_datetime=self.end_dt,
             gnssSystem=self._systems(),
         )
         if satNumData:
-            writeSatNum(satNumData, self._outpath('_sat.txt'))
+            writeSatNum(satNumData, self._outpath('_SAT.txt'))
             # 另存逐历元各系统卫星数明细 CSV，统计范围与 --systems 一致
             satCount = countSatBySystem(
                 self.obs_data,
                 systems=self._systems(),
                 start_datetime=self.start_dt, end_datetime=self.end_dt,
             )
-            writeSatNumDetailed(satCount, self._outpath('_sat.csv'))
+            writeSatNumDetailed(satCount, self._outpath('_SAT.csv'))
 
     def run_freq(self):
         print("-->统计频段使用情况(freq)")
         freqData = plotFreq(
             self.obs_head, self.obs_data,
-            pngFile=self._outpath('_freq.png'),
+            pngFile=self._outpath('_FREQ.png'),
             start_datetime=self.start_dt, end_datetime=self.end_dt,
             sat_list=self.sat_list, sys_list=self.sys_list,
             band_choose=self.band_choose_phase,
         )
         if freqData:
-            d = writeFreqData(freqData, self._outpath('_freq.txt'),
+            d = writeFreqData(freqData, self._outpath('_FREQ.txt'),
                               total_epochs=self.total_epochs)
             self.qc_value.update(d)
             # 保留原始频段计数 {prn: {L码: 次数}}，供 time 模式做
@@ -236,7 +236,7 @@ class QCProcessorBase:
         """统计卫星数据完整率（弧段口径），并识别连续缺测缺口。
 
         完整率以「卫星可见弧段」为分母，而非文件总历元数，
-        因此不会被卫星本身不可见的时间稀释（详见 qc/completeness.py）。
+        因此不会被卫星本身不可见的时间稀释（详见 qc/COMP.py）。
 
         若提供了广播星历（station 模式），额外计算「理论可见」口径的完整率。
         """
@@ -252,16 +252,16 @@ class QCProcessorBase:
         if not compData:
             print("    无可统计的卫星数据")
             return
-        d = writeCompleteness(compData, self._outpath('_completeness.txt'),
+        d = writeCompleteness(compData, self._outpath('_COMP.txt'),
                               total_epochs=self.total_epochs)
         self.qc_value.update(d)
         gaps = writeCompletenessDetailed(
             compData, self.obs_data, self.obs_head,
-            self._outpath('_completeness.csv'),
+            self._outpath('_COMP.csv'),
             band_choose=self.band_choose_keys,
             start_datetime=self.start_dt, end_datetime=self.end_dt,
         )
-        plotCompleteness(compData, pngFile=self._outpath('_completeness.png'),
+        plotCompleteness(compData, pngFile=self._outpath('_COMP.png'),
                          gapData=gaps)
         if gaps:
             plotCompletenessTimeline(gaps,
@@ -271,15 +271,15 @@ class QCProcessorBase:
         print("-->统计载噪比(CNR)")
         cnrData = plotCnr(
             self.obs_head, self.obs_data,
-            pngFile=self._outpath('_cnr.png'),
+            pngFile=self._outpath('_CNR.png'),
             start_datetime=self.start_dt, end_datetime=self.end_dt,
             sat_list=self.sat_list, sys_list=self.sys_list,
             band_choose=self.band_choose_snr,
         )
         if cnrData:
-            d = writeCnr(cnrData, self._outpath('_cnr.txt'))
+            d = writeCnr(cnrData, self._outpath('_CNR.txt'))
             self.qc_value.update(d)
-            writeCnrDetailed(cnrData, self._outpath('_cnr.csv'))
+            writeCnrDetailed(cnrData, self._outpath('_CNR.csv'))
 
     def run_slip(self):
         print("-->检测周跳(slip)")
@@ -289,11 +289,11 @@ class QCProcessorBase:
             sat_list=self.sat_list, sys_list=self.sys_list,
         )
         if slipData:
-            d = writeSlip(slipData, self._outpath('_slip.txt'))
+            d = writeSlip(slipData, self._outpath('_SLIP.txt'))
             self.qc_value.update(d)
-            writeSlipDetailed(slipData, self._outpath('_slip.csv'),
+            writeSlipDetailed(slipData, self._outpath('_SLIP.csv'),
                               self.obs_data, self.start_dt, self.end_dt)
-            plotCycleSlip(slipData, pngFile=self._outpath('_slip.png'))
+            plotCycleSlip(slipData, pngFile=self._outpath('_SLIP.png'))
 
     def run_phasenoise(self):
         print("-->计算相位噪声(phasenoise)")
@@ -304,10 +304,10 @@ class QCProcessorBase:
             band_choose=self.band_choose_keys,
         )
         if phaseNoiseData:
-            d = writePhaseNoise(phaseNoiseData, self._outpath('_phasenoise.txt'))
+            d = writePhaseNoise(phaseNoiseData, self._outpath('_PN.txt'))
             self.qc_value.update(d)
-            writePhaseNoiseDetailed(phaseNoiseData, self._outpath('_phasenoise.csv'))
-            plotPhaseNoise(phaseNoiseData, pngFile=self._outpath('_phasenoise.png'))
+            writePhaseNoiseDetailed(phaseNoiseData, self._outpath('_PN.csv'))
+            plotPhaseNoise(phaseNoiseData, pngFile=self._outpath('_PN.png'))
 
     def run_multipath(self):
         print("-->计算多路径效应(multipath)")
@@ -318,10 +318,10 @@ class QCProcessorBase:
             band_choose=self.band_choose_keys,
         )
         if mpData:
-            d = writeMp(mpData, self._outpath('_multipath.txt'))
+            d = writeMp(mpData, self._outpath('_MP.txt'))
             self.qc_value.update(d)
-            writeMpDetailed(mpData, self._outpath('_multipath.csv'))
-            plotMultipath(mpData, pngFile=self._outpath('_multipath.png'))
+            writeMpDetailed(mpData, self._outpath('_MP.csv'))
+            plotMultipath(mpData, pngFile=self._outpath('_MP.png'))
 
     def run_cmc(self):
         print("-->计算历元间差分码减相位(CMC)...")
@@ -332,10 +332,10 @@ class QCProcessorBase:
             band_choose=self.band_choose_keys,
         )
         if cmcData:
-            d = writeCmc(cmcData, self._outpath('_cmc.txt'))
+            d = writeCmc(cmcData, self._outpath('_CMC.txt'))
             self.qc_value.update(d)
-            writeCmcDetailed(cmcData, self._outpath('_cmc.csv'))
-            plotCMC(cmcData, pngFile=self._outpath('_cmc.png'))
+            writeCmcDetailed(cmcData, self._outpath('_CMC.csv'))
+            plotCMC(cmcData, pngFile=self._outpath('_CMC.png'))
 
     def run_iod(self):
         print("-->计算电离层延迟变化率(IOD)")
@@ -346,10 +346,10 @@ class QCProcessorBase:
             band_choose=self.band_choose_keys,
         )
         if iodData:
-            d = writeIon(iodData, self._outpath('_iod.txt'))
+            d = writeIon(iodData, self._outpath('_IOD.txt'))
             self.qc_value.update(d)
-            writeIonDetailed(iodData, self._outpath('_iod.csv'))
-            plotIOD(iodData, pngFile=self._outpath('_iod.png'))
+            writeIonDetailed(iodData, self._outpath('_IOD.csv'))
+            plotIOD(iodData, pngFile=self._outpath('_IOD.png'))
 
     def run_highOrderDiff(self):
         print("-->计算载波相位高阶差分(highOrderDiff)")
@@ -361,10 +361,10 @@ class QCProcessorBase:
             band_choose=self.band_choose_keys,
         )
         if highData:
-            d = writeHod(highData, self._outpath('_highOrderDiff.txt'))
+            d = writeHod(highData, self._outpath('_HOD.txt'))
             self.qc_value.update(d)
-            writeHodDetailed(highData, self._outpath('_highOrderDiff.csv'))
-            plotHighOrderDiff(highData, pngFile=self._outpath('_highOrderDiff.png'))
+            writeHodDetailed(highData, self._outpath('_HOD.csv'))
+            plotHighOrderDiff(highData, pngFile=self._outpath('_HOD.png'))
 
     # ---------- 聚合：PRN 级 ----------
     def _aggregate_prn_module_val(self):

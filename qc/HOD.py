@@ -452,7 +452,7 @@ def writeHod(highData, highFile):
                     highLines.append(' ' + epoch.strftime('%Y-%m-%d %H:%M:%S') + '%10.6f' % highOrder + '\n')
                 highLines.append('-' + prn + '_' + band + '\n')
                 highLines.append('\n')
-                summary_dict.setdefault('highOrder', {}).setdefault(prn, {})[band] = {'val': rms}
+                summary_dict.setdefault('HOD', {}).setdefault(prn, {})[band] = {'val': rms}
     highFileWrite.write(38*'-' + '\n')
     highFileWrite.write('-SAT\n\n')
     highFileWrite.writelines(highLines)

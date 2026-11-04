@@ -12,41 +12,41 @@
 
 # ---- 外层循环：观测文件组与各自输出根目录 ----
 INPUT_OBS_LIST=(
-    #"F:/GNSS_data/O/2024/brux/*.24o"
-    #"F:/GNSS_data/O/2024/wuh2/*.24o"
+#    "F:/GNSS_data/O/2024/brux/*.24o"
+     "F:/GNSS_data/O/2024/1/*.24o"
 #    "F:/GNSS_data/O/2024/ptbb/*.24o"
 #    "F:/GNSS_data/O/2024/jfng/*.24o"
 #    "F:/GNSS_data/O/2024/urum/*.24o"
 #    "F:/GNSS_data/O/2024/abpo/*.24o"
 #    "F:/GNSS_data/O/2024/ffmj/*.24o"
 #    "F:/GNSS_data/O/2024/coco/*.24o"
-    "./test/data/brux0050.24o"
+#    "./test/data/brux0050.24o"
 )
 OUTPUT_DIR_LIST=(
-    #"F:/GNSS_data/O/2024/brux"
-    #"F:/GNSS_data/O/2024/wuh2"
+#    "F:/GNSS_data/O/2024/brux"
+     "F:/GNSS_data/O/2024/1"
 #    "F:/GNSS_data/O/2024/ptbb"
 #    "F:/GNSS_data/O/2024/jfng"
 #    "F:/GNSS_data/O/2024/urum"
 #    "F:/GNSS_data/O/2024/abpo"
 #    "F:/GNSS_data/O/2024/ffmj"
 #    "F:/GNSS_data/O/2024/coco"
-     "./test"
+#     "./test"
 )
 
 # ---- 内层循环：每个文件组要分别处理的系统 ----
 SYSTEMS_LIST=(C G E)
 
 # ---- 共用参数 ----
-#NAV_FILE="F:/GNSS_data/N/2024/*.24p"     # 导航文件（station/Sstation/time 用于 SPP；prn 模式供完整率算理论可见口径；留空则跳过）
-#SNX_FILE="F:/GNSS_data/SNX/*.SNX"       # SINEX 周解（station/Sstation/time 模式提供 ENU 参考原点）
-NAV_FILE="./test/data/*.24p"           # 导航文件（仅 station 模式用于 SPP；留空则跳过 SPP）
-SNX_FILE="./test/data/*.SNX"
+NAV_FILE="F:/GNSS_data/N/2024/*.24p"     # 导航文件（station/Sstation/time 用于 SPP；prn 模式供完整率算理论可见口径；留空则跳过）
+SNX_FILE="F:/GNSS_data/SNX/*.SNX"       # SINEX 周解（station/Sstation/time 模式提供 ENU 参考原点）
+#NAV_FILE="./test/data/*.24p"           # 导航文件（仅 station 模式用于 SPP；留空则跳过 SPP）
+#SNX_FILE="./test/data/*.SNX"
 START_TIME=""                            # 例如："2023-01-01 00:00:00"
 END_TIME=""                              # 例如："2023-01-01 23:59:59"
 SATELLITES=""                            # 空格分隔："G01 G02 C06"
 BANDS=""                                 # 波段选择 "G:L1C,L2W;C:L2I,L6I"
-CUTOFF=0                                # 完整率模块的理论可见截止高度角（度），需 NAV_FILE
+CUTOFF=0                                 # 完整率模块的理论可见截止高度角（度），需 NAV_FILE
 
 MODE="time"                               # prn 逐文件卫星评估 | station 跨文件测站评估 | Sstation 单站多日期时间序列 | time 逐历元时间序列
 

@@ -15,8 +15,8 @@ time 模式流程
 -------------
   1. 逐文件执行 QC 各模块（与 station 模式完全相同的 10 个模块 + SPP）；
   2. 读取各模块的**逐历元明细 CSV**：
-        _cnr.csv / _slip.csv / _multipath.csv / _cmc.csv / _iod.csv /
-        _phasenoise.csv / _highOrderDiff.csv / _completeness.csv
+        _CNR.csv / _SLIP.csv / _MP.csv / _CMC.csv / _IOD.csv /
+        _PN.csv / _HOD.csv / _COMP.csv
   3. **只保留「计算 SPP 时实际选用的频段」**——按每个文件实际选出的 SPP
      伪距码对过滤列（非 SPP 频点的列一律丢弃）；
   4. 逐历元把各模块的明细汇总成一行（均值 / RMS / 计数 / 有效样本数），
@@ -89,14 +89,14 @@ from qc.qc_engine_exp import QCProcessor, _extract_date_key, _extract_station_fr
 #   resid : 零均值残差量（多路径/CMC/IOD/相位噪声/高阶差分）→ RMS / 峰值 / 样本数
 #   flag  : 0/1 标记量（周跳、完整率）→ 计数 / 覆盖数
 MODULE_SPECS = (
-    ('cnr',           'CNR',  'level'),
-    ('slip',          'CSR',  'flag'),
-    ('multipath',     'MP',   'resid'),
-    ('cmc',           'CMC',  'resid'),
-    ('iod',           'IOD',  'resid'),
-    ('phasenoise',    'PN',   'resid'),
-    ('highOrderDiff', 'HOD',  'resid'),
-    ('completeness',  'COMP', 'flag'),
+    ('CNR',           'CNR',  'level'),
+    ('SLIP',          'CSR',  'flag'),
+    ('MP',            'MP',   'resid'),
+    ('CMC',           'CMC',  'resid'),
+    ('IOD',           'IOD',  'resid'),
+    ('PN',            'PN',   'resid'),
+    ('HOD',           'HOD',  'resid'),
+    ('COMP',          'COMP', 'flag'),
 )
 
 
@@ -157,6 +157,38 @@ def _fmt(v, nd=4):
     return f'{v:.{nd}f}'
 
 
+# 明细 CSV 的旧文件名后缀（模块命名改写为大写短名之前的名字）
+_LEGACY_SUFFIX = {
+    'CNR': 'cnr',
+    'SLIP': 'slip',
+    'MP': 'multipath',
+    'CMC': 'cmc',
+    'IOD': 'iod',
+    'PN': 'phasenoise',
+    'HOD': 'highOrderDiff',
+    'COMP': 'completeness',
+    'SAT': 'sat',
+    'FREQ': 'freq',
+}
+
+
+def _resolve_detail_csv(sub_dir, base, suffix):
+    """定位模块明细 CSV：优先新命名，找不到则回退到旧命名。
+
+    模块命名改写为大写短名后，旧输出目录里的明细文件仍是旧名。
+    为使断点续跑能复用这些已有结果，此处按「新 → 旧」顺序探测。
+    """
+    path = os.path.join(sub_dir, f'{base}_{suffix}.csv')
+    if os.path.exists(path):
+        return path
+    legacy = _LEGACY_SUFFIX.get(suffix)
+    if legacy:
+        old = os.path.join(sub_dir, f'{base}_{legacy}.csv')
+        if os.path.exists(old):
+            return old
+    return path
+
+
 def _parse_col(col):
     """
     拆解明细 CSV 的列名。
@@ -212,7 +244,7 @@ def _read_spp_txt(spp_file):
 
 def _read_sat_csv(sat_file):
     """
-    读取卫星数量明细 CSV（_sat.csv），提取逐历元各系统的可见卫星数。
+    读取卫星数量明细 CSV（_SAT.csv），提取逐历元各系统的可见卫星数。
 
     宽表格式：行=历元，列=各系统（'C'、'G' … 及 'ALL'）。
     返回 {epoch_str: {系统: 数量}}；文件不存在时返回空字典。
@@ -296,18 +328,21 @@ class TimeSeriesQC:
             if s and s not in self.sat_filter:
                 self.sat_filter.append(s)
 
-        self.acc = {}                 # (modkey, epoch_str) -> _Acc
-        self.sat_acc = {}             # (prn, modname, band_key, epoch) -> _Acc
+        # 所有逐历元累加器均以 **(测站, 历元)** 为键：
+        # 不同测站的观测文件可能覆盖同一时段（如 13 站同为某日），
+        # 若只用历元作键，后测站的同历元数据会覆盖先测站的。
+        self.acc = {}                 # (modkey, station, epoch_str) -> _Acc
+        self.sat_acc = {}             # (prn, modname, band_key, station, epoch) -> _Acc
         self.sat_mod_bands = {}        # (prn, modname) -> 该模块涉及的频段键集合
-        self.sat_epochs = {}          # prn -> set(epoch_str)
+        self.sat_epochs = {}          # prn -> set((station, epoch_str))
         # 完整率：(prn, 频段键) -> {'obs','arc','ratio'}
         # ratio = 有值历元数 / 可见弧段历元数，与 completeness 模块的
         # ratio_arc 口径一致（弧段完整率，整列恒定）
         self.comp_ratio = {}
-        self.spp_enu = {}             # epoch_str -> (E, N, U) 逐历元 ENU 残差
-        self.sat_count = {}           # epoch_str -> {系统: 可见卫星数}
-        self.epoch_station = {}       # epoch_str -> 测站名（文件名前 4 位）
-        self.epochs = set()           # 全部历元时间戳（字符串）
+        self.spp_enu = {}             # (station, epoch_str) -> (E, N, U) 逐历元 ENU 残差
+        self.sat_count = {}           # (station, epoch_str) -> {系统: 可见卫星数}
+        self.epochs = set()           # 全部 (station, epoch_str) 复合键
+        self.stations = []            # 参与统计的测站名（按出现顺序）
         self.spp_info = {}            # gsys -> {'codes': [...], 'keys': set()}
         self.spp_freq_counts = {}     # (prn, spp_code) -> freq 模块的观测次数
         self.file_summaries = []      # 每个文件的 SPP 选段记录
@@ -484,7 +519,7 @@ class TimeSeriesQC:
                 allow[gsys] = keys
 
         for suffix, mname, kind in MODULE_SPECS:
-            path = os.path.join(sub_dir, f'{base}_{suffix}.csv')
+            path = _resolve_detail_csv(sub_dir, base, suffix)
             header, rows = _read_wide_csv(path)
             if not header or not rows:
                 continue
@@ -515,16 +550,17 @@ class TimeSeriesQC:
             # 可见性以**该列非空**为准（空 = 该星该频段不可见），
             # 有值以标记为 1 为准（0 = 可见但该频段无值，属缺测）。
             comp_cols = ([(c, prn, key) for c, prn, gsys, key in keep]
-                         if suffix == 'completeness' else [])
+                         if suffix == 'COMP' else [])
 
             for row in rows:
                 ep = (row.get('epoch') or '').strip()
                 if not ep:
                     continue
-                self.epochs.add(ep)
-                if station:
-                    self.epoch_station.setdefault(ep, station)
-                acc = self.acc.setdefault((mname, ep), _Acc())
+                key_ep = (station, ep)
+                self.epochs.add(key_ep)
+                if station and station not in self.stations:
+                    self.stations.append(station)
+                acc = self.acc.setdefault((mname, station, ep), _Acc())
                 for c, prn, gsys, key in keep:
                     raw = (row.get(c) or '').strip()
                     if raw == '':
@@ -540,7 +576,7 @@ class TimeSeriesQC:
                     u['prns'][prn] = u['prns'].get(prn, 0) + 1
                     # 完整率模块的标记即「该频段该卫星有数据」，
                     # 单列出来作为有效数据历元数（不与其它模块混算）
-                    if suffix == 'completeness':
+                    if suffix == 'COMP':
                         vd = self.band_valid.setdefault(uk, {})
                         vd[prn] = vd.get(prn, 0) + 1
                     # ---- 选星参数 --sat：单独累加该星的统计量 ----
@@ -549,9 +585,10 @@ class TimeSeriesQC:
                     # （如周跳检测按卫星整体判定），只统计一份。
                     if prn in self.sat_filter:
                         bk = key if key else ''
-                        sacc = self.sat_acc.setdefault((prn, mname, bk, ep), _Acc())
+                        sacc = self.sat_acc.setdefault(
+                            (prn, mname, bk, station, ep), _Acc())
                         sacc.add(v)
-                        self.sat_epochs.setdefault(prn, set()).add(ep)
+                        self.sat_epochs.setdefault(prn, set()).add(key_ep)
                         self.sat_mod_bands.setdefault((prn, mname), set()).add(bk)
 
             # ---- 完整率：按连续可见段统计 ----
@@ -561,12 +598,14 @@ class TimeSeriesQC:
             # 卫星中途长时间消失后再出现时完整率会被严重拉低
             # （实测 C19 可见 1165 历元，却因跨越 878 历元的中断只算出 57%）。
             if comp_cols:
-                self._accum_comp_ratio(rows, comp_cols)
+                self._accum_comp_ratio(rows, comp_cols, station=station)
 
-    def _accum_comp_ratio(self, rows, comp_cols):
+    def _accum_comp_ratio(self, rows, comp_cols, station=None):
         """按 (prn, 频段) 统计完整率：分母为连续可见段内的历元数。
 
         comp_cols: [(列名, prn, 频段键), ...]
+        station:   测站名。完整率按站分别统计（键含 station），
+                   避免多站同日期时把不同站的同一颗星混算。
         """
         # 每个 (prn, 频段) 收集：可见历元集合、有值历元集合
         visible = {}
@@ -608,7 +647,8 @@ class TimeSeriesQC:
             obs_n = len(has_val.get(k, []))
             if arc_n <= 0:
                 continue
-            cr = self.comp_ratio.setdefault(k, {'obs': 0, 'arc': 0})
+            cr = self.comp_ratio.setdefault((station, k[0], k[1]),
+                                             {'obs': 0, 'arc': 0})
             cr['obs'] += obs_n
             cr['arc'] += arc_n
 
@@ -676,7 +716,8 @@ class TimeSeriesQC:
         采样间隔 = 相邻历元时间差的中位数；
         时间原点 = --time_origin 指定值，未指定时取最早的历元。
         """
-        eps = sorted(self.epochs)
+        # self.epochs 的元素为 (station, epoch_str)，此处只取历元部分
+        eps = sorted({e for _st, e in self.epochs})
         parsed = []
         for e in eps:
             try:
@@ -729,38 +770,46 @@ class TimeSeriesQC:
         return [str(acc.nz)]
 
     # ---------- 完整率（弧段口径，整列恒定） ----------
-    def _comp_rate(self, prn=None, band_key=None):
+    def _comp_rate(self, prn=None, band_key=None, station=None):
         """
         完整率（0~1 小数）：有值历元数 / 可见弧段历元数。
 
+        station 指定 → 该站的完整率；station=None 则跨所有站汇总。
         prn=None                → 跨全部卫星、跨其各频段取均值
                                    （先每星各频段均值，再跨星均值）
         prn 指定、band_key 指定 → 该星该频段的完整率
         prn 指定、band_key 为空 → 该星各频段完整率的均值
 
-        该指标是**整段弧段**的统计量，不随历元变化，故同一列各行取值相同；
+        该指标是**整段弧段**的统计量，不随历元变化，故同一站各行取值相同；
         也不按频段分列——双频完整率通常几乎相同，拆列无意义。
+        多站同日期时完整率**按站分别统计**，不会跨站混算。
         """
         if not self.comp_ratio:
             return None
+        # 只取指定站的数据；station=None 时取所有站
+        items = [(st, p, bk, d) for (st, p, bk), d in self.comp_ratio.items()
+                 if station is None or st == station]
+        if not items:
+            return None
+
         if prn is not None:
             if band_key:
-                d = self.comp_ratio.get((prn, band_key))
-                if not d or not d['arc']:
+                vals = [d['obs'] / d['arc'] for _st, p, bk, d in items
+                        if p == prn and bk == band_key and d['arc']]
+                if not vals:
                     return None
-                return d['obs'] / d['arc']
+                # 指定了站则只有一条；跨站时取均值
+                return sum(vals) / len(vals)
             # 该星跨频段取均值
-            vals = []
-            for (p, _bk), d in self.comp_ratio.items():
-                if p == prn and d['arc']:
-                    vals.append(d['obs'] / d['arc'])
+            vals = [d['obs'] / d['arc'] for _st, p, _bk, d in items
+                    if p == prn and d['arc']]
             if not vals:
                 return None
             return sum(vals) / len(vals)
 
-        # 跨卫星、跨频段取均值：先对每颗星的各频段取均值，再对卫星取均值
+        # 跨卫星、跨频段取均值：先对每颗星的各频段取均值，再跨星均值
         per_prn = {}
-        for (p, _bk), d in self.comp_ratio.items():
+        for _st, p, _bk, d in items:
             if not d['arc']:
                 continue
             per_prn.setdefault(p, []).append(d['obs'] / d['arc'])
@@ -812,6 +861,7 @@ class TimeSeriesQC:
             self.origin = datetime.datetime.now()
 
         # 逐星时只保留该星有数据的历元
+        # 复合键 (station, epoch) 排序：先按测站名，再按历元时间
         if prn is None:
             epochs = sorted(self.epochs)
         else:
@@ -877,40 +927,48 @@ class TimeSeriesQC:
             w = csv.writer(f)
             w.writerow(header_cols)
 
-            # 全卫星表的完整率：跨卫星、跨频段取均值（整列恒定）
-            comp_rate_all = self._comp_rate() if prn is None else None
+            # 完整率按站缓存：同一站内各行取值相同（整段弧段统计量），
+            # 多站同日期时各站独立统计
+            comp_cache = {}
 
-            for ep in epochs:
+            def _rate_of(station):
+                if station not in comp_cache:
+                    if prn is None:
+                        comp_cache[station] = self._comp_rate(station=station)
+                    else:
+                        comp_cache[station] = self._comp_rate(prn, band_key,
+                                                              station=station)
+                return comp_cache[station]
+
+            for key_ep in epochs:
+                station, ep = key_ep
                 try:
                     dt = datetime.datetime.strptime(ep, '%Y-%m-%d %H:%M:%S')
                 except ValueError:
                     dt = None
                 rel = (dt - self.origin).total_seconds() if dt else None
                 idx = int(round(rel / self.interval)) if rel is not None and self.interval else ''
-                row = [self.epoch_station.get(ep, ''), ep, idx]
+                row = [station or '', ep, idx]
                 for mname, kind, band_key, sfx in layout:
                     if mname == 'COMP':
-                        # 完整率是整段弧段的统计量，整列恒定
-                        if prn is None:
-                            rate = comp_rate_all
-                        else:
-                            rate = self._comp_rate(prn, band_key)
+                        # 完整率是整段弧段的统计量，同站各行恒定
+                        rate = _rate_of(station)
                         row.append(_fmt(rate, 4) if rate is not None else '')
                         continue
                     if prn is None:
-                        acc = self.acc.get((mname, ep))
+                        acc = self.acc.get((mname, station, ep))
                     else:
-                        acc = self.sat_acc.get((prn, mname, band_key, ep))
+                        acc = self.sat_acc.get((prn, mname, band_key, station, ep))
                     row.extend(self._row_value(mname, kind, acc))
                 # 卫星数量（整站量）：统计范围内各系统之和
                 # （--systems 限定单系统时，即为该系统的卫星数）
                 if has_sat:
-                    counts = self.sat_count.get(ep) or {}
+                    counts = self.sat_count.get(key_ep) or {}
                     row.append(str(sum(v for k, v in counts.items()
                                        if k != 'ALL')) if counts else '')
                 # SPP 逐历元解算结果（整站量）
                 if has_spp:
-                    enu = self.spp_enu.get(ep)
+                    enu = self.spp_enu.get(key_ep)
                     if enu is None:
                         row += ['', '', '', '']
                     else:
@@ -1030,28 +1088,33 @@ class TimeSeriesQC:
                         info['keys'].add(c[1:])
             self.file_summaries.append((base, codes_by_sys))
 
+            # 测站名 = 观测文件名前 4 位，作为逐历元数据的分组维度
+            station = _extract_station_from_filename(obs_file)
+
             # 合并 SPP 频段的 PRN 级频段计数（freq 模块口径）
             for (prn, code), cnt in self._read_spp_freq_csv(spp_freq_csv).items():
                 self.spp_freq_counts[(prn, code)] = (
                     self.spp_freq_counts.get((prn, code), 0) + cnt)
 
             # 合并逐历元 SPP 解算结果（ENU 残差），SPP 是整站量，与卫星无关
+            # 键为 (测站, 历元)，避免同日期多站的同历元互相覆盖
             enu = _read_spp_txt(os.path.join(sub_dir, f'{base}_spp.txt'))
             if enu:
-                self.spp_enu.update(enu)
+                for ep, v in enu.items():
+                    self.spp_enu[(station, ep)] = v
             else:
                 print('   (无 SPP 解算结果，跳过 SPP 列)')
 
             # 合并逐历元各系统可见卫星数（整站量，与卫星无关）
             # 各系统列已按 --systems 过滤，汇总表只出一列 SAT（范围内求和）
-            sat = _read_sat_csv(os.path.join(sub_dir, f'{base}_sat.csv'))
+            sat = _read_sat_csv(_resolve_detail_csv(sub_dir, base, 'SAT'))
             if sat:
-                self.sat_count.update(sat)
+                for ep, v in sat.items():
+                    self.sat_count[(station, ep)] = v
             else:
                 print('   (无卫星数量统计，跳过卫星数列)')
 
-            # 逐历元汇总（station = 文件名前 4 位的测站名）
-            station = _extract_station_from_filename(obs_file)
+            # 逐历元汇总
             self._aggregate_file(sub_dir, base, codes_by_sys, station=station)
 
         # ---- 输出 ----

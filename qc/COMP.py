@@ -561,7 +561,7 @@ def writeCompleteness(compData, outFile, total_epochs=0):
                             f'{r["gap_count"]:>9d}'
                             f'{r["max_gap"]:>9d}{r["max_gap_sec"]:>12.1f}\n')
                     # 参与 QCValue 汇总：主指标为弧段完整率
-                    summary_dict.setdefault('completeness', {}) \
+                    summary_dict.setdefault('COMP', {}) \
                                  .setdefault(prn, {})[band] = {'val': r['ratio_arc']}
         f.write('---------------------------------------------------------------------------------\n')
         f.write('-SAT\n')

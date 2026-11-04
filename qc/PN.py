@@ -283,7 +283,7 @@ def writePhaseNoise(phaseNoiseData, phaseNoiseFile):
                     rms = math.sqrt(square_sum / len(data['phaseNoise']))
                     line = f" {prn}_{band} {rms:10.6f} {min(data['phaseNoise']):10.6f} {max(data['phaseNoise']):10.6f}\n"
                     f.write(line)
-                    summary_dict.setdefault('phaseNoise', {}).setdefault(prn, {})[band] = {'val': rms}
+                    summary_dict.setdefault('PN', {}).setdefault(prn, {})[band] = {'val': rms}
         f.write(38*'-' + '\n')
         f.write('-SAT\n')
     return summary_dict

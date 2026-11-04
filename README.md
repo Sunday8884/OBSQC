@@ -16,9 +16,9 @@ OBSQC/
 │   ├── qc_engine.py        # PRN 模式引擎：单文件 QC → PRN 级汇总
 │   ├── qc_engine_exp.py    # Station 模式引擎：多文件 QC → 测站级汇总 → SPP → 多站对比表
 │   ├── qc_time.py          # Time 模式引擎：多文件 QC → 逐历元时间序列 QCValue.csv
-│   ├── satNum.py / freq.py / completeness.py / CNR.py / slip.py / phasenoise.py /
-│   │   multipath.py / CMC.py / IOD.py / highOrderDiff.py   # 各 QC 指标计算与写文件
-├── plot/                   # 各指标的绘图模块（plotSatNum / plotCnr / plotCycleSlip ...）
+│   ├── SAT.py / FREQ.py / COMP.py / CNR.py / SLIP.py / PN.py /
+│   │   MP.py / CMC.py / IOD.py / HOD.py   # 各 QC 指标计算与写文件
+├── plot/                   # 各指标的绘图模块（plotSAT / plotCNR / plotSLIP / plotPN / plotMP ...）
 ├── com/                    # 基础库：readObs / readNav / xyz2neu 等
 ├── spos/spp.py             # SPP 单点定位
 ├── spp_main.py             # spp计算入口：命令行解析 
@@ -107,9 +107,9 @@ obsqc.py（解析参数）
 
 ```
 各模块逐历元明细 CSV                SPP 选段（_sppband.csv）
-_cnr.csv  _slip.csv  _multipath.csv      C: C2I+C6I
-_cmc.csv  _iod.csv  _phasenoise.csv      E: C1C+C5Q
-_highOrderDiff.csv  _completeness.csv    G: C1C+C2W
+_CNR.csv  _SLIP.csv  _MP.csv      C: C2I+C6I
+_CMC.csv  _IOD.csv  _PN.csv      E: C1C+C5Q
+_HOD.csv  _COMP.csv    G: C1C+C2W
         │                                      │
         └──────── 频段过滤（只保留 SPP 频段）───┘
                           │
@@ -117,10 +117,16 @@ _highOrderDiff.csv  _completeness.csv    G: C1C+C2W
               逐历元汇总为一行（均值/RMS/计数）
                           │
                           ▼
-        QCValue.csv（行=历元） + QCValue_sppband.txt
+        QCValue.csv（行=测站+历元） + QCValue_sppband.txt
 ```
 
 要点：
+
+- **多站并行**：所有逐历元数据以 **(测站, 历元)** 为复合键归并。
+  不同测站的观测文件可能覆盖同一时段（如 13 站同为某日），
+  若只用历元作键，后测站的同历元数据会覆盖先测站的；
+  复合键保证各站数据互不干扰。
+  行序为「先按测站名，再按历元时间」。
 
 - **频段过滤**：各模块明细 CSV 的列名形如 `C19_C2I` / `C19_L2I` / `C05_S2I`，
   去掉观测类型前缀后得到频段键（`2I`），只保留 SPP 选段涉及的频段键；
@@ -199,19 +205,40 @@ SPP_E   SPP_N   SPP_U   SPP_3D   ← 整站量，置于最右
 
 | 模块开关 | 含义 | 输出文件后缀 |
 |---|---|---|
-| `--satnum` | 卫星数量统计 | `_sat.png/.txt/.csv` |
-| `--freq` | 频段利用率统计 | `_freq.png/.txt` |
-| `--completeness` | 卫星数据完整率统计 | `_completeness.png/.txt/.csv`、`_gaps.png` |
-| `--cnr` | 载噪比分析 | `_cnr.png/.txt/.csv` |
-| `--slip` | 周跳检测（TurboEdit） | `_slip.png/.txt/.csv` |
-| `--phasenoise` | 相位噪声 | `_phasenoise.png/.txt/.csv` |
-| `--multipath` | 多路径效应 | `_multipath.png/.txt/.csv` |
-| `--cmc` | 历元间差分码减相位（CMC） | `_cmc.png/.txt/.csv` |
-| `--iod` | 电离层延迟变化率 | `_iod.png/.txt/.csv` |
-| `--highOrderDiff` | 载波相位高阶差分（4 阶） | `_highOrderDiff.png/.txt/.csv` |
+| `--satnum` | 卫星数量统计 | `_SAT.png/.txt/.csv` |
+| `--freq` | 频段利用率统计 | `_FREQ.png/.txt` |
+| `--completeness` | 卫星数据完整率统计 | `_COMP.png/.txt/.csv`、`_gaps.png` |
+| `--cnr` | 载噪比分析 | `_CNR.png/.txt/.csv` |
+| `--slip` | 周跳检测（TurboEdit） | `_SLIP.png/.txt/.csv` |
+| `--phasenoise` | 相位噪声 | `_PN.png/.txt/.csv` |
+| `--multipath` | 多路径效应 | `_MP.png/.txt/.csv` |
+| `--cmc` | 历元间差分码减相位（CMC） | `_CMC.png/.txt/.csv` |
+| `--iod` | 电离层延迟变化率 | `_IOD.png/.txt/.csv` |
+| `--highOrderDiff` | 载波相位高阶差分（4 阶） | `_HOD.png/.txt/.csv` |
 | `--spp` | SPP 定位（仅 station 模式） | `_spp.txt/.png`，产出 `spp3drms`、`dop` 指标 |
 
 所有开关默认为**启用**，可用 `--no-<name>` 单独关闭。
+
+#### 命名对照
+
+模块的**文件名后缀**与**汇总表列名**统一采用大写短名：
+
+| 模块 | 文件名后缀 | 汇总表列名 | 含义 |
+|---|---|---|---|
+| `--cnr` | `_CNR` | `CNR` | 载噪比 |
+| `--slip` | `_SLIP` | `CSR` | 周跳检测（TurboEdit），输出为周跳次数 |
+| `--multipath` | `_MP` | `MP` | 多路径效应 |
+| `--cmc` | `_CMC` | `CMC` | 历元间差分码减相位 |
+| `--iod` | `_IOD` | `IOD` | 电离层延迟变化率 |
+| `--phasenoise` | `_PN` | `PN` | 相位噪声 |
+| `--highOrderDiff` | `_HOD` | `HOD` | 载波相位高阶差分（4 阶） |
+| `--completeness` | `_COMP` | `COMP` | 卫星数据完整率 |
+| `--satnum` | `_SAT` | `SAT` | 卫星数量统计 |
+| `--freq` | `_FREQ` | `FREQ` | 频段利用率统计 |
+| `--spp` | `_spp` | `spp3drms`、`dop` | SPP 定位结果 |
+
+> 命令行开关名（`--cnr` / `--phasenoise` 等）保持不变，
+> 仅**产出文件名**与**汇总表列名**采用上表的大写短名。
 
 ### 2.4 各模块的频段（波段）是如何确定的
 
@@ -427,9 +454,9 @@ presence arc = 该 PRN 首个「有值历元」~ 末个「有值历元」之间�
 
 | 文件 | 内容 |
 |---|---|
-| `_completeness.txt` | 系统级 + 卫星级汇总表（`ObsNum`/`ArcNum`/`SpanNum`/`Arc(%)`/`Span(%)`/`GapCnt`/`MaxGap`）。`+SYS` 段的 `BandNum` 是该系统下的 **(PRN, Band) 组合条目数**，不是频段数 |
-| `_completeness.csv` | 逐历元的 0/1 标记宽表，用于二次分析与绘图 |
-| `_completeness.png` | 完整率柱状图（按系统分面，低于 90% 标红，虚线为 90% 参考线，不标注柱顶数值） |
+| `_COMP.txt` | 系统级 + 卫星级汇总表（`ObsNum`/`ArcNum`/`SpanNum`/`Arc(%)`/`Span(%)`/`GapCnt`/`MaxGap`）。`+SYS` 段的 `BandNum` 是该系统下的 **(PRN, Band) 组合条目数**，不是频段数 |
+| `_COMP.csv` | 逐历元的 0/1 标记宽表，用于二次分析与绘图 |
+| `_COMP.png` | 完整率柱状图（按系统分面，低于 90% 标红，虚线为 90% 参考线，不标注柱顶数值） |
 | `_gaps.png` | 缺口时间线图（横轴时间，红线为缺口持续时段） |
 
 `completeness` 指标以 `R_arc` 参与 `_QCValue.csv` 的 PRN 级汇总与
@@ -519,8 +546,8 @@ cd /f/OBSQC && bash obsqc.sh
 ```
 <output_dir>/
 ├── <obs_name>/
-│   ├── <obs_name>_sat.png / _freq.png / _cnr.png ...     # 各模块图
-│   ├── <obs_name>_cnr.txt / _cnr.csv ...                 # 统计文本与明细
+│   ├── <obs_name>_SAT.png / _FREQ.png / _CNR.png ...     # 各模块图
+│   ├── <obs_name>_CNR.txt / _CNR.csv ...                 # 统计文本与明细
 │   ├── <obs_name>_QCValue.csv                            # PRN×指标汇总
 │   ├── <obs_name>_QCValue_station.csv                    # 测站级单行（station/Sstation/time 模式）
 │   ├── <obs_name>_spp.txt / _spp.png                     # SPP 结果（station/Sstation/time 模式）
@@ -546,13 +573,14 @@ time 模式的 `QCValue_<标签>.csv`（全卫星）表头：
 | `IOD` | 电离层延迟变化率 RMS |
 | `PN` | 相位噪声 RMS |
 | `HOD` | 载波相位高阶差分 RMS |
-| `COMP` | 弧段完整率 (0~1)，整段弧段统计量，各行取值相同；单星表为该星各频段均值 |
+| `COMP` | 弧段完整率 (0~1)，整段弧段统计量，**同一测站内**各行取值相同（多站时各站独立统计）；单星表为该星各频段均值 |
 | `SAT` | 逐历元统计范围内各系统的可见卫星数之和（`--systems` 限定单系统时即该系统数量） |
 | `SPP_E` / `SPP_N` / `SPP_U` | 逐历元单点定位的东/北/天残差 (m)，相对参考原点 |
 | `SPP_3D` | 逐历元三维误差 sqrt(E²+N²+U²) (m) |
 
-SPP 与卫星数量都是**整站量**，与卫星无关，因此全星表与单星表的这些列取值相同。
-SPP 结果取自各文件的 `_spp.txt`，卫星数量取自 `_sat.csv`（未提供 `--nav`
+SPP 与卫星数量都是**整站量**，与卫星无关，因此全星表与单星表的这些列取值相同；
+同时它们是**测站级**的量，各站数值不同（按 `(测站, 历元)` 归并）。
+SPP 结果取自各文件的 `_spp.txt`，卫星数量取自 `_SAT.csv`（未提供 `--nav`
 或对应模块未启用时无相应列）。
 
 > **完整率的口径**：分母为该星**实际可见**的历元数，且按**连续可见段**切分——
@@ -560,9 +588,9 @@ SPP 结果取自各文件的 `_spp.txt`，卫星数量取自 `_sat.csv`（未提
 > 不计入分母。否则该段会被误判为缺测，把完整率严重拉低（实测 C19 实际可见
 > 1165 历元，若跨越 878 历元的中断只算出 57%，实际应为 99.7%）。
 
-> **卫星数量的系统口径**：`_sat.csv` 的各系统列统计范围**与 `--systems` 一致**——
+> **卫星数量的系统口径**：`_SAT.csv` 的各系统列统计范围**与 `--systems` 一致**——
 > 只统计被选中的系统；而其 `ALL` 列**统计所有 PRN**（不过滤系统），
-> 与 `_sat.txt` / `_sat.png` 中 `plotSatNum` 的 ALL 口径一致。
+> 与 `_SAT.txt` / `_SAT.png` 中 `plotSatNum` 的 ALL 口径一致。
 > 默认系统列表为 `G C R E L S J W`（不含 BeiDou-3 惯性解 `I`），
 > 故默认下各系统列之和小于 `ALL`。
 >
