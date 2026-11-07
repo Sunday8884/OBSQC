@@ -1,0 +1,75 @@
+# =====================================================================
+# PPP 配置文件（TOML 格式，# 为注释）
+# 优先级：命令行参数 > 本文件 > pppConfig.py DEFAULT_CONFIG
+# =====================================================================
+
+# ================= 系统/波段 =================
+# systems: 参与解算的卫星系统（G:GPS, C:BDS, E:Galileo, R:GLONASS）
+systems = ["G", "C", "E"]
+# bands: 各系统双频波段组合，留空用默认（G:C1C,C2W; C:C2I,C6I; E:C1X,C5X）
+bands = "G:C1C,C2W;C:C2I,C6I;E:C1X,C5X"
+
+# ================= 定位模式与高度角 =================
+elev_cutoff_deg = 7.0        # 高度角截止角（度）
+mode = "static"              # static 静态 | kinematic 动态
+
+# ================= 观测噪声（米）=================
+# 高度角定权：sigma = sigma0 * (a + b/sin(el))，sigma0 按码/载波分别取 sigma_p/sigma_l
+sigma_p = 3.0                # 无电离层组合伪距噪声
+sigma_l = 0.03               # 无电离层组合载波噪声
+sigma_elev_a = 0.3           # 定权系数 a
+sigma_elev_b = 0.7           # 定权系数 b
+
+# ================= 天顶湿延迟 ZWD（随机游走）=================
+est_zwd = true               # 估计对流层天顶湿延迟
+sigma_zwd_init = 0.1         # ZWD 初值方差 (m)^2
+q_zwd = 1e-8                 # ZWD 过程噪声方差率 (m^2/s)
+
+# ================= 对流层梯度（MacMillan 模型，需 est_zwd）=================
+est_trop_grad = false        # 估计北/东对流层梯度 Gn/Ge（RTKLIB TROPOPT_ESTG 同源）
+sigma_grad_init = 0.01       # 梯度初值方差（RTKLIB VAR_GRA）
+q_grad = 1e-8                # 梯度过程噪声方差率
+
+# ================= 滤波初值与过程噪声 =================
+sigma_pos_init = 100.0       # 坐标初值方差 (m)^2
+sigma_clk = 1e6              # 接收机钟差：白噪声方差 (m)^2
+sigma_amb = 100.0            # 模糊度初值方差（距离域 (m)^2）
+q_pos_kinematic = 100.0      # 动态模式位置随机游走方差率 (m^2/s)
+
+# ================= 误差模型 =================
+trop_prior = "collins"       # 对流层先验模型（collins 经验模型；ZWD 状态会吸收模型差异）
+windup = true                # 相位缠绕改正
+solid_tide = true            # 固体潮改正
+
+# ================= 精密产品（路径，可被命令行覆盖）=================
+atx_file = "ppptest/data/igs20.atx"                                  # ANTEX 天线 PCO/PCV
+blq_file = "ppptest/data/FES2004_DXS.BLQ"                            # BLQ 海潮载荷
+dcb_file = "ppptest/data/CAS0MGXRAP_20222670000_01D_01D_DCB.BSX"     # 码偏差（CODE DCB 或 Bias SINEX）
+erp_file = "ppptest/data/igs22287.erp"                               # IGS ERP（UT1-UTC 等）
+# rec_antenna: 接收机天线类型，留空时取 RINEX 头 ANT # / TYPE
+rec_antenna = ""
+
+# ================= 精密星历处理 =================
+sp3_pos_order = 10           # 轨道 Lagrange 内插阶数
+sp3_clk_interp = "linear"    # 钟差内插方式：linear | lagrange
+sp3_apply_rel = true         # 补周期相对论钟差（IGS 精密钟差约定不含 -2r*v/c^2；产品已含则关闭）
+use_sat_var = true           # 量测 R 叠加 SP3 轨道/钟差方差（RTKLIB var_rs 同源）
+phase_code_jump = true       # 毫秒级接收机钟跳检测与模糊度平移（RTKLIB udbias 同源）
+
+# ================= 周跳探测 =================
+slip_mw_sigma = 4.0          # MW 组合周跳阈值（sigma 倍数）
+slip_gf_thresh = 0.10        # GF 无几何组合周跳阈值 (m)
+gap_reset_sec = 120.0        # 观测中断超过该时长（秒）重置弧段/模糊度
+
+# ================= 质量控制 =================
+outlier_nsigma = 3.0         # 新息粗差剔除阈值（sigma 倍数）
+min_sat = 4                  # 最少卫星数，不足则不解算
+# exclude_sats: 排除的卫星。例 BDS GEO = ["C01","C02","C03","C04","C05"]；
+#               剔除整个 BDS-2 用 C01~C14（WUM 产品下 GCE 剔 BDS-2 精度最优）
+exclude_sats = []
+ref_mean_skip_min = 0        # ENU 参考坐标均值跳过前 N 分钟（无 SNX 时用）
+ppp_conv_thresh = 0.3        # 绘图收敛判据：3D 误差阈值 (m)
+ppp_conv_hold = 5            # 收敛判据需持续保持的时长（分钟）
+
+# ================= 输出 =================
+plot = true                  # 是否绘图
