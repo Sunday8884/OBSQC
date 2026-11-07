@@ -318,11 +318,12 @@ def writePosData(posData, posFile, XMEAN=None, YMEAN=None, ZMEAN=None):
     其中 E/N/U 为相对所有有效历元坐标均值（XMEAN,YMEAN,ZMEAN）的东、北、天误差。
     """
     if XMEAN is None or YMEAN is None or ZMEAN is None:
-        if len(posData) == 0:
+        valid = [ep for ep in posData if 'x' in posData[ep]]
+        if len(valid) == 0:
             return
-        XMEAN = float(np.mean([posData[ep]['x'] for ep in posData]))
-        YMEAN = float(np.mean([posData[ep]['y'] for ep in posData]))
-        ZMEAN = float(np.mean([posData[ep]['z'] for ep in posData]))
+        XMEAN = float(np.mean([posData[ep]['x'] for ep in valid]))
+        YMEAN = float(np.mean([posData[ep]['y'] for ep in valid]))
+        ZMEAN = float(np.mean([posData[ep]['z'] for ep in valid]))
 
     posOpen = open(posFile, 'w+')
     posOpen.write('\n')
@@ -336,7 +337,12 @@ def writePosData(posData, posFile, XMEAN=None, YMEAN=None, ZMEAN=None):
               '\n')
     posOpen.write(header)
 
+    n_skip = 0
     for epoch in posData:
+        if 'x' not in posData[epoch]:
+            # 该历元无解(如剩余卫星几何奇异致 LSQ 失败), 跳过写出
+            n_skip += 1
+            continue
         N, E, U = xyz2neu(XMEAN, YMEAN, ZMEAN,
                           posData[epoch]['x'], posData[epoch]['y'], posData[epoch]['z'],
                           'WGS84')
@@ -358,8 +364,8 @@ def writePosData(posData, posFile, XMEAN=None, YMEAN=None, ZMEAN=None):
             '%10.3f' % posData[epoch]['GDOP'] +
             '\n')
     posOpen.close()
-
-
+    if n_skip:
+        print(f'  警告: {n_skip} 个历元无解(剔除后几何奇异), 未写入坐标文件')
 def sppLsq(G_MAT, W_MAT, y_MAT):
     G_MAT = G_MAT.astype(np.float64)
     W_MAT = W_MAT.astype(np.float64)

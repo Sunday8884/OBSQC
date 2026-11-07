@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-SPP 绘图模块：将 spp.py 中的绘图逻辑独立出来，便于复用与维护。
+SPP 绘图模块：将 spos.py 中的绘图逻辑独立出来，便于复用与维护。
 """
 import numpy as np
 import matplotlib.dates as mdate

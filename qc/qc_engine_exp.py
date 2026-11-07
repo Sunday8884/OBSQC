@@ -323,7 +323,7 @@ class QCProcessor(QCProcessorBase):
             return
 
         try:
-            from spos.spp import spp as _spp, read_snx_coord
+            from spos.spos import spp as _spp, read_snx_coord
         except ImportError as e:
             print(f"--> 跳过 SPP：无法导入 spos.spp ({e})")
             return

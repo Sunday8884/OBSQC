@@ -8,7 +8,7 @@ import datetime
 import numpy as np
 from com.readObs import readObsHead, readObs
 from com.readNav import readNav
-from spos.spp import spp
+from spos.spos import spp
 
 
 # ========================= 辅助函数 =========================
