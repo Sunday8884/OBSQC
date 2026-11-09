@@ -39,6 +39,7 @@ from spos.spos import read_snx_coord
 from ppp.pppConfig import DEFAULT_CONFIG, load_config
 from ppp.satposSp3 import satPosSp3
 from ppp.slip import detectCycleSlip
+from ppp.qcweight import qc_grey_weights, qc_abs_weights, abs_calibrate
 from ppp.corrections import (sunPosECEF, solidEarthTide, phaseWindUp, tropMapping,
                              saastamoinenZenith, nmfMapf, poleTide)
 from com.readAtx import readAntex, satAntCorr, recAntCorr, bandToAtxTag
@@ -47,6 +48,37 @@ from com.readDcb import readDcb, applyDcbSat, dcb_stat
 from com.readErp import readErp, getErp
 from ppp.pppfilter import KalmanFilter
 from ppp.pppresult import writePosData
+
+
+# ======================================================== 辅助：IGGⅢ 等价权
+def _iggiFactor(vhist, k0, k1, wmin):
+    """
+    IGGⅢ 三段式等价权（抗差估计，杨元喜），自适应标准化版。
+    vhist : 该星该类型最近若干历元的标准化新息 v = innov/√R（含待评估的
+            最后一历元；R 为该行量测噪声方差）。
+    两级归一化：
+      ① v 用量测噪声 σ_row 归一（消除码/载波量纲差）；
+      ② σ̂ = max(1.4826·MAD(|v|历史窗, 不含 v_last), 1.0)——该星历史鲁棒
+        噪声水平，floor=1.0 表示名义噪声。语义为"当前新息相对自身历史
+        是否突跳"：孤立粗差持续触发降权，星噪声水平整体缓变时 σ̂ 随窗
+        滚动自适应（实为 n 倍名义噪声 → σ̂≈n，不会持续误压权）。
+    u = |v_last|/σ̂ 后套 IGGⅢ：
+      |u| ≤ k0 ：w = 1（正常，不降权）
+      k0<|u|≤k1：w = (k0/|u|)·((k1−|u|)/(k1−k0))²（平滑降权）
+      |u| > k1 ：w = wmin（软化剔除，避免删行破坏批结构）
+    """
+    v = vhist[-1] if vhist else None
+    if v is None or not np.isfinite(v):
+        return 1.0
+    arr = np.abs(np.asarray(vhist[:-1], dtype=float))
+    mad = float(np.median(arr)) if arr.size else 0.0
+    sigma = max(1.4826 * mad, 1.0)
+    u = abs(v) / sigma
+    if u <= k0:
+        return 1.0
+    if u >= k1:
+        return wmin
+    return max((k0 / u) * ((k1 - u) / (k1 - k0)) ** 2, wmin)
 
 
 # ======================================================== 辅助：码定位初值
@@ -247,6 +279,14 @@ def ppp(obsHead, obsData, sp3Data, clkData, bandChoose, startDatetime, endDateti
     dbgRes = None   # DEBUG: 残差转储缓冲（环境变量 PPP_DEBUG_RES 指定输出路径时启用）
     if os.environ.get('PPP_DEBUG_RES'):
         dbgRes = []
+    qcState = {}    # QC 定权滑窗状态：{prn: {gf, gfep, l1m, mp, cmc, p, ep}}
+    absHist = {}    # qc_method='abs' 跨历元指标历史：{metric: [值...]}（标定缓冲）
+    absN = 0        # abs 热身历元计数
+    resState = {}   # IGGⅢ 抗差状态：{prn: {'P': [v...], 'L': [v...], 'ep'}}
+                    # v = 标准化新息 innov/√R（上一历元，RAE 单历元延迟反馈）
+    qcwDbg = None   # DEBUG: QC 权值转储（环境变量 PPP_DEBUG_QCW）
+    if os.environ.get('PPP_DEBUG_QCW'):
+        qcwDbg = []
 
     # ---------------- 历元循环 ----------------
     for epoch in sorted(obsData.keys()):
@@ -311,8 +351,156 @@ def ppp(obsHead, obsData, sp3Data, clkData, bandChoose, startDatetime, endDateti
             lamIF = CLIGHT / (f1 + f2)
             varSat = float(satVarInEpoch.get(prn, 0.0)) \
                 if cfg.get('use_sat_var', True) else 0.0
+
+            # QC 指标原值（qcweight 灰色关联定权用，差分/窗口量在装配后
+            # 统一计算，状态在周跳/中断后重置）：
+            #   MP 组合：P1 − (f1²+f2²)/(f1²−f2²)·λ1L1 + 2f2²/(f1²−f2²)·λ2L2
+            #   CMC    ：P1 − λ1L1
+            #   GF     ：λ1L1 − λ2L2（PN/IOD 用）
+            #   L1 米  ：λ1L1（HOD 用）
+            mpRaw = cmcRaw = gfRaw = l1mRaw = None
+            if L1 is not None and L2 is not None:
+                mpRaw = P1 - (f1 ** 2 + f2 ** 2) / (f1 ** 2 - f2 ** 2) * lam1 * L1 \
+                    + 2 * f2 ** 2 / (f1 ** 2 - f2 ** 2) * lam2 * L2
+                cmcRaw = P1 - lam1 * L1
+                gfRaw = lam1 * L1 - lam2 * L2
+                l1mRaw = lam1 * L1
+            s1 = rec.get('S' + bands[0][1:])
+            s2 = rec.get('S' + bands[1][1:])
+            snrVals = [float(v) for v in (s1, s2) if v is not None]
+            snr = float(np.mean(snrVals)) if snrVals else None
+
             satObs[prn] = {'P': PIF, 'L': LIF, 'lamIF': lamIF,
-                           'sys': gnssSys, 'rs': rs, 'varSat': varSat}
+                           'sys': gnssSys, 'rs': rs, 'varSat': varSat,
+                           'mp': mpRaw, 'cmc': cmcRaw, 'gf': gfRaw,
+                           'l1m': l1mRaw, 'snr': snr}
+
+        # 本历元最大 SNR（snr_weight 相对权参考，缺失时退化高度角模型）
+        epochMaxSnr = max((float(so['snr']) for so in satObs.values()
+                           if so.get('snr')), default=48.0)
+
+        # --- QC 灰色关联定权（每历元跨可见卫星，替换高度角随机模型）---
+        # 指标（qc/ 模块全部逐星动态指标，周跳/中断重置状态）：
+        #   mpd=|ΔMP|  cmcd=|ΔCMC|  snr=SNR均值
+        #   pn=相位噪声（GF 三阶差分/√40）
+        #   hod=高阶差分噪声（L1 四阶差分/√70）
+        #   iod=电离层变化率 |ΔGF/Δt|
+        # min-max 正向化 → 熵权 → 灰色关联系数(ρ) → 加权关联度 p_i → w=p_i
+        if cfg.get('qc_weight', False) and satObs:
+            satInd = {}
+            newQC = {}
+            for prn, so in satObs.items():
+                st = qcState.get(prn)
+                slipped = epoch in slipMap.get(prn, ())
+                if st is None or slipped \
+                        or (epoch - st['ep']).total_seconds() > 90.0:
+                    st = {'gf': [], 'gfep': None, 'l1m': [],
+                          'mp': None, 'cmc': None, 'p': []}
+                ind = {}
+                mp, cmc, gf, l1m = so.get('mp'), so.get('cmc'), \
+                    so.get('gf'), so.get('l1m')
+                # 码类差分（消除模糊度常数）
+                if mp is not None and st['mp'] is not None:
+                    ind['mpd'] = abs(mp - st['mp'])
+                if cmc is not None and st['cmc'] is not None:
+                    ind['cmcd'] = abs(cmc - st['cmc'])
+                # IOD：GF 电离层变化率 (m/s)
+                if gf is not None and st['gf'] and st['gfep'] is not None:
+                    ind['iod'] = abs(
+                        (gf - st['gf'][-1]) /
+                        (epoch - st['gfep']).total_seconds())
+                # PN：GF 三阶差分 / √40（4 点滑窗）
+                if gf is not None and len(st['gf']) >= 3:
+                    seq = st['gf'][-3:] + [gf]
+                    d = seq[3] - 3 * seq[2] + 3 * seq[1] - seq[0]
+                    if abs(d) <= 100.0:
+                        ind['pn'] = abs(d) / np.sqrt(40.0)
+                # HOD：L1(米) 四阶差分 / √70（5 点滑窗）
+                if l1m is not None and len(st['l1m']) >= 4:
+                    seq = st['l1m'][-4:] + [l1m]
+                    d = seq[4] - 4 * seq[3] + 6 * seq[2] - 4 * seq[1] + seq[0]
+                    if abs(d) <= 100.0:
+                        ind['hod'] = abs(d) / np.sqrt(70.0)
+                if so.get('snr') is not None:
+                    ind['snr'] = so['snr']
+                if ind:
+                    satInd[prn] = ind
+                # 更新滑窗状态（GF/L1 缓冲、MP/CMC/IOD 前值）
+                if gf is not None:
+                    st['gf'].append(gf)
+                    if len(st['gf']) > 3:
+                        st['gf'].pop(0)
+                    st['gfep'] = epoch
+                if l1m is not None:
+                    st['l1m'].append(l1m)
+                    if len(st['l1m']) > 4:
+                        st['l1m'].pop(0)
+                st['mp'] = mp
+                st['cmc'] = cmc
+                st['ep'] = epoch
+                newQC[prn] = st
+            qcState = newQC
+            # 指标子集过滤（qc_indicators：逗号分隔，空 = 全部 6 指标；
+            # pn/hod/iod 高度相关，可只留 pn+iod 降低熵权冗余）
+            _keep = {s.strip() for s in
+                     str(cfg.get('qc_indicators', '') or '').split(',') if s.strip()}
+            if _keep:
+                satInd = {p: {k: v for k, v in ind.items() if k in _keep}
+                          for p, ind in satInd.items()}
+            # winsorize：列向截尾到 [q, 1−q] 分位（单星异常值不再压扁
+            # 跨星 min-max 归一化域），p 时间平滑（降低逐历元抖动）
+            _meth = str(cfg.get('qc_method', 'gra'))
+            if _meth == 'abs':
+                # 绝对阈值标定法：指标对跨历元分位数 [q,1−q] 打绝对分，
+                # p 跨历元可比（整体质量差时相对评分集体失真的根治）；
+                # 热身（qc_abs_warmup 历元）前回退 gra 相对评分
+                absN += 1
+                _warm = max(int(cfg.get('qc_abs_warmup', 300)), 10)
+                for ind in satInd.values():
+                    for k, v in ind.items():
+                        if v is not None and np.isfinite(v):
+                            absHist.setdefault(k, []).append(float(v))
+                _cap = _warm * 6
+                for k in absHist:
+                    if len(absHist[k]) > _cap:
+                        del absHist[k][:len(absHist[k]) - _cap]
+                if absN >= _warm:
+                    pmap = qc_abs_weights(satInd, abs_calibrate(absHist))
+                else:
+                    pmap = qc_grey_weights(
+                        satInd, rho=float(cfg.get('qc_rho', 0.5)),
+                        winsor=float(cfg.get('qc_winsor', 0.1)), method='gra')
+            else:
+                pmap = qc_grey_weights(
+                    satInd, rho=float(cfg.get('qc_rho', 0.5)),
+                    winsor=float(cfg.get('qc_winsor', 0.1)), method=_meth)
+            _nS = max(int(cfg.get('qc_smooth', 1)), 1)
+            for prn, so in satObs.items():
+                p = pmap.get(prn)
+                if p is not None:
+                    st = newQC.get(prn)
+                    if st is not None:
+                        st['p'].append(p)
+                        if len(st['p']) > _nS:
+                            st['p'].pop(0)
+                        p = float(np.mean(st['p']))
+                so['qcW'] = p if p is not None else 1.0
+                so['qcPbar'] = 1.0
+            # p̄ 取实际施加值的均值（含未评分星的 1.0），mul 归一化基准
+            _pbar = float(np.mean([so['qcW'] for so in satObs.values()])) \
+                if satObs else 1.0
+            for so in satObs.values():
+                so['qcPbar'] = _pbar
+            if qcwDbg is not None:
+                for prn, so in satObs.items():
+                    si = satInd.get(prn, {})
+                    qcwDbg.append((sodDbg, prn, so['qcW'],
+                                   si.get('mpd', float('nan')),
+                                   si.get('cmcd', float('nan')),
+                                   si.get('pn', float('nan')),
+                                   si.get('hod', float('nan')),
+                                   si.get('iod', float('nan')),
+                                   si.get('snr', float('nan'))))
 
         # --- 首历元：无有效初值时用码定位确定 ---
         if kf is None:
@@ -438,6 +626,53 @@ def ppp(obsHead, obsData, sp3Data, clkData, bandChoose, startDatetime, endDateti
 
             sinE = max(np.sin(elev), 1e-3)
             elevFactor = float(cfg['sigma_elev_a']) + float(cfg['sigma_elev_b']) / sinE
+            # 观测定权（σ² = σ0²·obsFactor²），分解为基础因子 f × 质量因子 g：
+            #   基础因子 f：snr_weight 开启时用相对 SNR 权代替高度角权
+            #              f = SNR_max/SNR（逐历元相对、均值保持，限幅 [0.25,4]），
+            #              卫星无 SNR 或未开启时回落高度角模型 f = a+b/sinE
+            #   质量因子 g：qc_weight 开启时按 qc_mode 组合灰色关联评分 p
+            #       replace ：σ = σ0/√p           完全替换（f 不参与）
+            #       hybrid  ：σ = σ0·f/√p         非均值保持（平均噪声被 1/√p̄ 抬升）
+            #       mul     ：σ = σ0·f·√(p̄/p)    乘性混合，g=p̄/p 逐历元均值保持
+            #       mul_pure：σ = σ0·√(p̄/p)      无 f 项（消融对照）
+            #   即 snr_weight 只替换 f 位置的高度角项，与 qc_mode 正交组合；
+            #   二者均关闭时 σ = σ0·elevFactor（RTKLIB 同源默认）
+            if cfg.get('snr_weight', False) and so.get('snr'):
+                fBase = min(max(float(epochMaxSnr) / max(float(so['snr']), 1.0),
+                                0.25), 4.0)
+            else:
+                fBase = elevFactor
+            if cfg.get('qc_weight', False):
+                _mode = cfg.get('qc_mode', 'replace')
+                _p = max(float(so.get('qcW', 1.0)), 1e-3)
+                if _mode == 'replace':
+                    obsFactor = 1.0 / np.sqrt(_p)
+                elif _mode == 'hybrid':
+                    obsFactor = fBase / np.sqrt(_p)
+                elif _mode == 'mul':
+                    obsFactor = fBase * np.sqrt(
+                        max(float(so.get('qcPbar', 1.0)), 1e-3) / _p)
+                elif _mode == 'mul_pure':
+                    obsFactor = np.sqrt(max(float(so.get('qcPbar', 1.0)),
+                                            1e-3) / _p)
+                else:
+                    obsFactor = fBase
+            else:
+                obsFactor = fBase
+            # --- IGGⅢ 残差抗差层（RAE：上一历元标准化新息反馈，可选）---
+            # 码/载波分别取等价权；新弧段或无历史时 w=1 不干预
+            iggiWP = iggiWL = 1.0
+            if cfg.get('robust_iggi', False):
+                stR = resState.get(prn)
+                if stR is not None \
+                        and (epoch - stR['ep']).total_seconds() <= 90.0:
+                    _k0 = float(cfg.get('robust_k0', 2.0))
+                    _k1 = float(cfg.get('robust_k1', 3.5))
+                    _wm = float(cfg.get('robust_wmin', 0.1))
+                    if stR['P']:
+                        iggiWP = _iggiFactor(stR['P'], _k0, _k1, _wm)
+                    if stR['L']:
+                        iggiWL = _iggiFactor(stR['L'], _k0, _k1, _wm)
             mfw = tropMapping(elev)
             cotz = 1.0 / np.tan(elev)   # 梯度映射用（MacMillan）
 
@@ -522,10 +757,11 @@ def ppp(obsHead, obsData, sp3Data, clkData, bandChoose, startDatetime, endDateti
                        'cotz': cotz, 'az': az, 'varSat': so['varSat'],
                        'zhd': zhdEpoch}
 
-            # 伪距量测（R 叠加卫星轨道/钟差方差 varSat，RTKLIB var_rs 同源）
+            # 伪距量测（R 叠加卫星轨道/钟差方差 varSat，RTKLIB var_rs 同源；
+            # IGGⅢ 等价权作用于量测噪声项，产品方差不膨胀）
             rows.append(dict(rowBase, type='P', z=so['P'],
-                             R=(float(cfg['sigma_p']) * elevFactor) ** 2
-                             + rowBase['varSat']))
+                             R=(float(cfg['sigma_p']) * obsFactor) ** 2
+                             / iggiWP + rowBase['varSat']))
             codeRows.append((e, gnssSys))
 
             # 载波量测（弧段管理延迟到相位-码跳变检测之后统一执行）
@@ -554,12 +790,12 @@ def ppp(obsHead, obsData, sp3Data, clkData, bandChoose, startDatetime, endDateti
                 geNow = float(kf.x[gradEIdx, 0])
                 tropWet *= 1.0 + cotz * (gnNow * np.cos(az) + geNow * np.sin(az))
             hNoAmb = rho + corr - satClk * CLIGHT + clockNow + tropPrior + tropWet
-            wFlip = -1.0 if cfg.get('windup_flip', False) else 1.0
-            bInit = (so['L'] - so['lamIF'] * w * wFlip) - hNoAmb
+            bInit = (so['L'] - so['lamIF'] * w) - hNoAmb
 
             rows.append(dict(rowBase, type='L',
-                             z=so['L'] - so['lamIF'] * w * wFlip,
-                             R=(float(cfg['sigma_l']) * elevFactor) ** 2
+                             z=so['L'] - so['lamIF'] * w,
+                             R=(float(cfg['sigma_l']) * obsFactor) ** 2
+                             / iggiWL
                              + rowBase['varSat'],
                              w=w, isNewSat=isNewSat, gapNew=gapNew,
                              slipped=slipped, bInit=bInit))
@@ -696,6 +932,22 @@ def ppp(obsHead, obsData, sp3Data, clkData, bandChoose, startDatetime, endDateti
                                    np.degrees(np.arcsin(_sinel)),
                                    np.degrees(row['az']), float(innov[i]),
                                    float(S[i, i]), int(rejected), _ambDbg))
+            # --- IGGⅢ 抗差反馈存储：标准化新息 v = innov/√R（纯量测噪声
+            # 归一，码/载波同尺度）；新弧段载波历史作废。u 的自适应归一
+            # （MAD）在下一历元应用时进行（见 _iggiFactor）---
+            if cfg.get('robust_iggi', False):
+                _rWin = max(int(cfg.get('robust_win', 8)), 1)
+                for i, row in enumerate(rows):
+                    stR = resState.setdefault(row['prn'],
+                                              {'P': [], 'L': [], 'ep': epoch})
+                    v = float(innov[i]) / np.sqrt(max(float(row['R']), 1e-12))
+                    if row['type'] == 'L' and not row.get('contArc', True):
+                        stR['L'] = []
+                    buf = stR[row['type']]
+                    buf.append(v)
+                    if len(buf) > _rWin:
+                        buf.pop(0)
+                    stR['ep'] = epoch
         if nMeas < 4:
             continue
 
@@ -769,6 +1021,11 @@ def ppp(obsHead, obsData, sp3Data, clkData, bandChoose, startDatetime, endDateti
             f.write('sod prn type elev az innov S rej amb\n')
             for r in dbgRes:
                 f.write('%.1f %s %s %.3f %.3f %.6f %.6f %d %.3f\n' % r)
+    if os.environ.get('PPP_DEBUG_QCW') and qcwDbg:
+        with open(os.environ['PPP_DEBUG_QCW'], 'w', encoding='utf-8') as f:
+            f.write('sod prn qcW mpd cmcd pn hod iod snr\n')
+            for r in qcwDbg:
+                f.write('%.1f %s %.4f %.4f %.4f %.4f %.4f %.4g %.2f\n' % r)
     if plot_show or plot_save:
         plot_ppp(posData, refX, refY, refZ, plot_show=plot_show,
                  plot_save=plot_save,

@@ -14,7 +14,7 @@ DEFAULT_CONFIG = {
     'systems': ['G', 'C', 'E'],
     'bands': 'G:C1C,C2W;C:C2I,C6I;E:C1X,C5X',
     # ---- 定位模式与高度角 ----
-    'elev_cutoff_deg': 7.0,
+    'elev_cutoff_deg': 10.0,
     'mode': 'static',            # static | kinematic
     # ---- 观测噪声（米）----
     'sigma_p': 3.0,              # 无电离层组合伪距
@@ -29,6 +29,25 @@ DEFAULT_CONFIG = {
     'est_trop_grad': False,      # 估计北/东梯度 Gn/Ge（RTKLIB TROPOPT_ESTG 同源）
     'sigma_grad_init': 0.01,     # 梯度初值方差 (状态量)^2（RTKLIB VAR_GRA）
     'q_grad': 1e-8,              # 梯度过程噪声方差率（RTKLIB SQR(prn_trop*0.1)）
+    # ---- QC 灰色关联定权（实验：σ = σ0·f·g 分解）----
+    # f=基础因子（snr_weight 开启时为 SNR_max/SNR，否则高度角 a+b/sinE），
+    # g=质量因子（qc_weight 开启时由 qc_mode 决定组合方式），二者正交
+    'qc_weight': False,          # 开启后 p_i（质量评分）进入定权
+    'qc_method': 'gra',          # 评分合成：gra=熵权+灰色关联 | critic=CRITIC权 | rank=秩变换 | topsis=TOPSIS | fixed=AHP固定权 | game=博弈论组合 | abs=绝对阈值标定
+    'qc_mode': 'replace',        # replace=σ0/√p | hybrid=σ0·f/√p | mul=σ0·f·√(p̄/p) | mul_pure=σ0·√(p̄/p)
+    'snr_weight': False,         # SNR 权代替 f 位置的高度角权：f=SNR_max/SNR（逐历元相对，均值保持）
+    'qc_rho': 0.5,               # 灰色关联系数分辨系数 ρ
+    'qc_winsor': 0.1,            # 指标列向 winsorize 分位（0=关，抗单星异常值）
+    'qc_smooth': 3,              # p 滑动平滑历元数（1=不平滑）
+    'qc_indicators': '',         # 指标子集（逗号分隔，如 'mpd,cmcd,snr,pn,iod'；空=全部 6 指标）
+    'qc_abs_warmup': 300,        # qc_method='abs' 绝对标定热身历元数（热身前回退 gra）
+    # ---- IGGⅢ 残差抗差层（RAE：上一历元标准化新息反馈，可选）----
+    # v=innov/√R 经窗内 MAD 自适应归一后套三段权（见 ppp._iggiFactor）
+    'robust_iggi': False,        # 开启后码/载波 R 按 IGGⅢ 等价权膨胀
+    'robust_k0': 2.0,            # 降权门限（标准化新息 |u|≤k0 不降权）
+    'robust_k1': 3.5,            # 剔除门限（|u|>k1 降为 wmin，软化剔除）
+    'robust_win': 8,             # 标准化新息存储窗长（历元）
+    'robust_wmin': 0.1,          # 等价权下限（0.1 = 最大膨胀 10 倍方差）
     # ---- 滤波初值与过程噪声 ----
     'sigma_pos_init': 100.0,     # 坐标初值方差 (m)^2
     'sigma_clk': 100.0,          # 接收机钟差：白噪声标准差 (m)，方差=平方（RTKLIB VAR_CLK=1e4 同源）
@@ -43,7 +62,6 @@ DEFAULT_CONFIG = {
     'rec_ant_delta': False,      # RINEX 头 DELTA H/E/N：仅解算基准为标石坐标时开启
                                  # （IGS SINX 参考坐标指 ARP，默认关闭避免 U 偏高 antdel_U）
     'pole_tide': True,           # 极潮改正（IERS 2010 eq.7.26，RTKLIB tide_pole 同源）
-    'windup_flip': False,        # 消融开关：缠绕改正取反（诊断符号用）
     # 载波码-相一致性平移阈值（米）：连续弧段载波新息中位数超过该值时，
     # 整体平移模糊度以恢复码-相相干（接收机钟 Stepping 码跟随、相位连续所致）
     'phase_jump_thresh_m': 10.0,

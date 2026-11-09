@@ -4,22 +4,54 @@
 # =====================================================================
 
 # ================= 系统/卫星/波段 =================
-systems = ["G", "C", "E"]
+systems = ["G"]  # 多系统时改回 ["G", "C", "E"]
 # 各系统双频波段组合，默认 G:C1C,C2W; C:C2I,C6I; E:C1X,C5X
 bands = "G:C1C,C2W;C:C2I,C6I;E:C1X,C5X"
 # 排除的卫星 BDS GEO = ["C01","C02","C03","C04","C05"]；剔除整个 BDS-2 用 C01~C14
-exclude_sats = []
+exclude_sats = ["C01","C02","C03","C04","C05","C06","C07","C08",
+                "C09","C10","C11","C12","C13","C14"]
 
 # ================= 定位模式与高度角 =================
 elev_cutoff_deg = 10.0        # 高度角截止角（度）
-mode = "static"              # static 静态 | kinematic 动态
+mode = "static"               # static 静态 | kinematic 动态
 
-# ================= 权阵 =================
+# ================= 高度角权阵 =================
 # 高度角定权：sigma = sigma0 * (a + b/sin(el))，sigma0 按码/载波分别取 sigma_p/sigma_l
 sigma_p = 0.3                # 伪距噪声
 sigma_l = 0.003              # 载波噪声基准
 sigma_elev_a = 1.0           # 定权系数 a
 sigma_elev_b = 1.0           # 定权系数 b
+
+# ================= QC 灰色关联定权 =================
+# 定权分解 σ = σ0·f·g：f 为基础因子（高度角或 SNR），g 为质量因子
+# 逐历元跨星 6 指标（|ΔMP| / |ΔCMC| / SNR / 相位噪声 pn / 高阶差分 hod / IOD）
+# → min-max 正向化 → 熵权 → 灰色关联系数(ρ) → 加权关联度 p_i ∈ (0,1]，作为该星相对质量评分，乘入量测噪声。
+# qc_mode（qc_weight 开启时生效）:
+#   replace  σ = σ0/√p                    完全替换高度角随机模型
+#   hybrid   σ = σ0·f/√p                  f×质量因子，非均值保持
+#   mul      σ = σ0·f·√(p̄/p)              乘性混合 f×g，g=p̄/p 逐历元均值保持
+#   mul_pure σ = σ0·√(p̄/p)                无 f 项
+snr_weight = false           # 用SNR 权代替高度角权f = SNR_max/SNR，
+qc_weight = false
+qc_mode = "mul"
+qc_method = "gra"            # 评分合成：gra=熵权+灰色关联(默认) | critic=CRITIC权+灰色关联 | rank=秩变换合成 | topsis=TOPSIS贴近度 | fixed=AHP固定权+灰色关联 | game=博弈论组合权 | abs=绝对阈值标定
+qc_rho = 0.5                 # 灰色关联系数分辨系数 ρ
+# --- 灰关联框架鲁棒化 ---
+qc_winsor = 0.1              # 指标列向 winsorize 分位（0=关）
+qc_smooth = 3                # p 滑动平滑历元数（1=不平滑）
+qc_indicators = ""           # 指标子集（逗号分隔；空=全部 6 指标）
+qc_abs_warmup = 300          # qc_method="abs" 绝对标定热身历元数（标定窗=q 值×6 分位，热身前回退 gra）
+
+# ================= IGGⅢ 残差抗差层（RAE，可选）=================
+# 上一历元标准化新息 v = innov/√R，经窗内 MAD 自适应归一（σ̂=max(1.4826·MAD,1)，
+# 消除星间噪声水平差）后 u=|v|/σ̂：|u|≤k0 不降权；k0<|u|≤k1 平滑降权；
+# |u|>k1 降为 wmin（软化剔除）。噪声实为 n 倍名义时 σ̂≈n，不会持续误压权。
+robust_iggi = false
+robust_k0 = 2.0              # 降权门限
+robust_k1 = 3.5              # 剔除门限
+robust_win = 8               # 标准化新息窗长（历元）
+robust_wmin = 0.1            # 等价权下限（最大膨胀 10 倍方差）
+
 
 # ================= 天顶湿延迟 ZWD（随机游走）=================
 est_zwd = true               # 估计对流层天顶湿延迟
@@ -38,11 +70,12 @@ sigma_amb = 100.0            # 模糊度初值方差（距离域 (m)^2）
 q_pos_kinematic = 100.0      # 动态模式位置随机游走方差率 (m^2/s)
 
 # ================= 误差模型 =================
-# trop_prior: saas_nmf = Saastamoinen 干延迟 + NMF 干/湿分离映射
-#             collins  = Collins 经验全延迟先验
-trop_prior = "saas_nmf"      # 对流层先验模型
+trop_prior = "saas_nmf"      # 对流层先验模型saas_nmf=干延迟 + NMF 干/湿分离映射； collins = Collins 经验全延迟先验
 windup = true                # 相位缠绕改正
 solid_tide = true            # 固体潮改正
+pole_tide = true             # 极潮改正（IERS）
+sat_pco = true               # 卫星天线 PCO
+rec_pco = true               # 接收机天线 PCO/PCV
 
 # ================= 精密产品 =================
 atx_file = "ppptest/data/igs20.atx"                                  # ANTEX 天线 PCO/PCV
