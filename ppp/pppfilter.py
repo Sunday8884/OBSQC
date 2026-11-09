@@ -58,7 +58,7 @@ class KalmanFilter:
         return mapping
 
     # ---------------------------------------------------------- 量测更新
-    def update(self, H, z, R, hHat=None, guard=1e16, nsigma=None):
+    def update(self, H, z, R, hHat=None, guard=1e16, nsigma=None, min_thresh=None):
         """
         标量量测更新。
         H : 1×n 设计阵
@@ -69,6 +69,11 @@ class KalmanFilter:
                否则 innovation 按 z − H@x 计算（仅对线性模型成立）。
         nsigma : 粗差剔除阈值。若 |innov| > nsigma·sqrt(S)，
                  则不应用本次更新（先验拒绝），返回 (innov, S, True)。
+        min_thresh : 拒绝门限下限（米）。实际门限 = max(nsigma·sqrt(S), min_thresh)。
+                 用于载波量测：模糊度方差收敛后 3σ 门限会收缩到厘米级，
+                 而接收机钟漂/码-相差异可致载波新息达数百米（RTKLIB 载波
+                 无拒绝门，新息由白噪声钟差吸收），故须固定下限防止载波
+                 被永久拒绝（死锁）。
         返回 (innov, innovVar, rejected)。
         滤波发散保护：若 S 或 Kalman 增益异常大则跳过本量测，返回 (None, None, False)。
         """
@@ -87,12 +92,54 @@ class KalmanFilter:
         S = float((HP @ H.T).item()) + R
         if not np.isfinite(S) or S <= 0 or S > guard:
             return None, None, False
-        if nsigma is not None and abs(innov) > float(nsigma) * np.sqrt(S):
-            return innov, S, True
+        if nsigma is not None:
+            thresh = float(nsigma) * np.sqrt(S)
+            if min_thresh is not None:
+                thresh = max(thresh, float(min_thresh))
+            if abs(innov) > thresh:
+                return innov, S, True
         K = (HP.T) / S
         self.x = self.x + K * innov
         IKH = np.eye(self.n) - K @ H
         # Joseph 形式，保证协方差对称正定
         self.P = IKH @ self.P @ IKH.T + K @ K.T * R
+        self.P = 0.5 * (self.P + self.P.T)
+        return innov, S, False
+
+    # ---------------------------------------------------------- 多维量测更新
+    def update_multi(self, H, z, R, hHat=None, guard=1e16):
+        """
+        多维量测批量更新（RTKLIB filter 同源：单星码+载波联合处理）。
+        H : m×n 设计阵
+        z : m 维量测向量
+        R : m×m 量测方差阵
+        hHat : m 维非线性模型预测 h(x)（必须与 H 同一状态参考点）
+        返回 (innov 向量, S 阵, rejected=False)。
+        批量处理使每星的码-相残差之差自动分配给模糊度、公共部分分配给
+        钟差/位置——标量逐行处理会因行间状态耦合产生病态增益（发散）。
+        """
+        H = np.array(H, dtype=np.float64)
+        if H.shape[1] < self.n:
+            H = np.pad(H, ((0, 0), (0, self.n - H.shape[1])))
+        z = np.asarray(z, dtype=np.float64).reshape(-1)
+        R = np.array(R, dtype=np.float64).reshape(z.size, z.size)
+        if hHat is None:
+            hHat = H @ self.x
+        else:
+            hHat = np.asarray(hHat, dtype=np.float64).reshape(-1)
+        innov = z - hHat
+        HP = H @ self.P
+        S = HP @ H.T + R
+        if not np.all(np.isfinite(S)) or np.any(np.diag(S) <= 0) or \
+                np.any(np.diag(S) > guard):
+            return None, None, False
+        try:
+            Sinv = np.linalg.inv(S)
+        except np.linalg.LinAlgError:
+            return None, None, False
+        K = HP.T @ Sinv                       # n×m
+        self.x = self.x + K @ innov.reshape(-1, 1)
+        IKH = np.eye(self.n) - K @ H
+        self.P = IKH @ self.P @ IKH.T + K @ R @ K.T   # Joseph
         self.P = 0.5 * (self.P + self.P.T)
         return innov, S, False

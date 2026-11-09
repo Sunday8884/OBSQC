@@ -59,10 +59,19 @@ def satPosSp3(bandChoose, obsData, sp3Data, clkData, epoch, config=None):
         if abs(C1 - C2) > 100:  # 粗差剔除
             continue
 
-        # 发射时间 ≈ 接收时间 - 平均伪距/光速（一次近似足够，几何迭代在滤波器内进行）
+        # 发射时间：t_tx = tag − pr/c − dts_sat（pr 含 c·dtr − c·dts，接收机钟差抵消；
+        # 先用粗时刻查钟差，再迭代一次，RTKLIB satposs 同源思想）
         aveP = (C1 + C2) / 2.0
         epochFind = epoch - datetime.timedelta(seconds=aveP / CLIGHT)
 
+        pos, clk, vel, posStd, clkStd = getSp3PosClk(sp3Data, prn, epochFind,
+                                                     posOrder=posOrder,
+                                                     clkInterp=config.get('sp3_clk_interp', 'linear'),
+                                                     wantStd=True)
+        if pos is None or clk is None:
+            continue
+        # 一次迭代：扣除卫星钟差对应的发射时刻偏差（|dts|可达 ±ms → 位置误差 ~m 级）
+        epochFind = epoch - datetime.timedelta(seconds=aveP / CLIGHT + clk)
         pos, clk, vel, posStd, clkStd = getSp3PosClk(sp3Data, prn, epochFind,
                                                      posOrder=posOrder,
                                                      clkInterp=config.get('sp3_clk_interp', 'linear'),

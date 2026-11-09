@@ -22,6 +22,7 @@ ppp(obsHead, obsData, sp3Data, clkData, bandChoose, startDatetime, endDatetime,
     -> (posData, XMEAN, YMEAN, ZMEAN)   # 与 spos.spp() 接口保持一致
 """
 import datetime
+import os
 import numpy as np
 
 from com.gnssParameter import CLIGHT, bandDictGetFreqPos
@@ -38,7 +39,8 @@ from spos.spos import read_snx_coord
 from ppp.pppConfig import DEFAULT_CONFIG, load_config
 from ppp.satposSp3 import satPosSp3
 from ppp.slip import detectCycleSlip
-from ppp.corrections import sunPosECEF, solidEarthTide, phaseWindUp, tropMapping
+from ppp.corrections import (sunPosECEF, solidEarthTide, phaseWindUp, tropMapping,
+                             saastamoinenZenith, nmfMapf, poleTide)
 from com.readAtx import readAntex, satAntCorr, recAntCorr, bandToAtxTag
 from com.readBlq import readBlq, oceanLoadingDisp
 from com.readDcb import readDcb, applyDcbSat, dcb_stat
@@ -110,7 +112,11 @@ def _codePosition(satObs, satClkInEpoch, gSysList, x0=None, maxIter=12, rejThres
 
     if len(active) < 4 or not np.isfinite(X[:3]).all():
         return None
-    return float(X[0, 0]), float(X[1, 0]), float(X[2, 0])
+    # 顺便返回各系统接收机钟差（米）——用于滤波钟差状态初始化
+    # （RTKLIB udclk_ppp 同源：initx(CLIGHT*dtr, VAR_CLK)，避免首历元
+    #   钟差 0 初值与真实钟差相差数十公里导致载波新息超限被拒）
+    return (float(X[0, 0]), float(X[1, 0]), float(X[2, 0]),
+            [float(X[3 + i, 0]) for i in range(nSys)])
 
 
 # ======================================================== 主引擎
@@ -142,6 +148,9 @@ def ppp(obsHead, obsData, sp3Data, clkData, bandChoose, startDatetime, endDateti
     if estGrad and not estZwd:
         print('警告：est_trop_grad 需要开启 est_zwd，对流层梯度估计未启用。')
         estGrad = False
+    # 对流层模型：saas_nmf（RTKLIB TROPOPT_EST 同源：ZTD 总天顶延迟状态 +
+    # Saastamoinen 干延迟先验 + NMF 干/湿分离映射）| collins（旧：Collins 全延迟先验 + 残余 ZWD）
+    tropSaas = str(cfg.get('trop_prior', 'collins')).lower() == 'saas_nmf'
 
     # 波段频率/波长
     bandChoose = bandDictGetFreqPos(bandChoose)
@@ -155,10 +164,22 @@ def ppp(obsHead, obsData, sp3Data, clkData, bandChoose, startDatetime, endDateti
               % (atxData['n_sat'], atxData['n_rec'], cfg['atx_file']))
     blqData = None
     if cfg.get('blq_file'):
-        if not station or station.upper() not in (blqData := readBlq(cfg['blq_file'])):
-            print('警告：BLQ 文件中无测站 %s，海潮载荷改正未启用。' % (station or '?'))
-            blqData = None
+        blqAll = readBlq(cfg['blq_file'])
+        blqStation = None
+        if station and station.upper() in blqAll:
+            blqStation = station.upper()
         else:
+            # IGS 9 字符站名约定：MARKER NAME 前 4 字符为 IGS 站名
+            # （如 WUH200CHN -> WUH2），用于匹配 BLQ 测站
+            for cand in sorted(blqAll.keys()):
+                if station and station.upper()[:4] == cand[:4]:
+                    blqStation = cand
+                    break
+        if blqStation is None:
+            print('警告：BLQ 文件中无测站 %s，海潮载荷改正未启用。' % (station or '?'))
+        else:
+            station = blqStation
+            blqData = blqAll
             print('BLQ：测站 %s 海潮载荷已启用 -> %s' % (station, cfg['blq_file']))
     dcbData = None
     if cfg.get('dcb_file'):
@@ -185,6 +206,9 @@ def ppp(obsHead, obsData, sp3Data, clkData, bandChoose, startDatetime, endDateti
                 atxTags[s] = (bl[0], tag1, bl[1], tag2)
 
     recAntType = cfg.get('rec_antenna') or obsHead.get('Antenna Type') or None
+    antDel = obsHead.get('Antenna Delta') or None
+    if antDel is not None and antDel[0] is None:
+        antDel = None   # 头文件未给出 DELTA H/E/N
     if atxData is not None and recAntType is None:
         print('警告：RINEX 头未含天线类型且未配置 rec_antenna，接收机 PCO/PCV 未启用。')
 
@@ -206,7 +230,13 @@ def ppp(obsHead, obsData, sp3Data, clkData, bandChoose, startDatetime, endDateti
     kf = None
     tracks = {}   # prn -> {'idx': 状态索引, 'lastEpoch': datetime, 'windup': 累计缠绕(周)}
 
-    zwdIdx = 3 + nSys   # ZWD 状态固定索引
+    # 状态布局：[pos(3), clk(nSys), d(nSys), zwd, gradN, gradE, amb...]
+    # d = 码-相钟差差（载波量测含 d、码不含）：接收机钟漂使码观测漂移而
+    # 载波不同步，钟差状态由码驱动漂移后，载波新息含全星一致共模 ±数百
+    # 米；d 状态（白噪声每历元重置）正规吸收该共模，EKF 协方差自洽
+    # （等效 RTKLIB 由白噪声钟差吸收的行为，且不污染 amb/ZWD 协方差）
+    dIdx = 3 + nSys                    # 码-相钟差差状态起始索引
+    zwdIdx = dIdx + nSys               # ZWD 状态固定索引
     gradNIdx = zwdIdx + 1 if estGrad else None   # 梯度北分量（MacMillan Gn）
     gradEIdx = zwdIdx + 2 if estGrad else None   # 梯度东分量（MacMillan Ge）
     nBase = zwdIdx + (1 if estZwd else 0) + (2 if estGrad else 0)
@@ -214,6 +244,9 @@ def ppp(obsHead, obsData, sp3Data, clkData, bandChoose, startDatetime, endDateti
     # ---------------- 结果 ----------------
     posData = {}
     Xs, Ys, Zs = [], [], []
+    dbgRes = None   # DEBUG: 残差转储缓冲（环境变量 PPP_DEBUG_RES 指定输出路径时启用）
+    if os.environ.get('PPP_DEBUG_RES'):
+        dbgRes = []
 
     # ---------------- 历元循环 ----------------
     for epoch in sorted(obsData.keys()):
@@ -221,6 +254,8 @@ def ppp(obsHead, obsData, sp3Data, clkData, bandChoose, startDatetime, endDateti
             continue
         if endDatetime is not None and epoch > endDatetime:
             continue
+        sodDbg = (epoch - epoch.replace(hour=0, minute=0, second=0,
+                                        microsecond=0)).total_seconds()
 
         # --- 卫星位置/钟差（精密星历）---
         satPosInEpoch, satClkInEpoch, satVarInEpoch = satPosSp3(
@@ -284,12 +319,24 @@ def ppp(obsHead, obsData, sp3Data, clkData, bandChoose, startDatetime, endDateti
             x0Code = _codePosition(satObs, satClkInEpoch, gSysList, x0)
             if x0Code is None:
                 continue
-            x0 = list(x0Code)
+            x0 = list(x0Code[:3])
+            clk0 = x0Code[3]
             xInit = np.zeros(nBase)
             xInit[:3] = x0
+            # 接收机钟差状态用码解初值（RTKLIB udclk_ppp 同源）
+            for i in range(3, 3 + nSys):
+                xInit[i] = clk0[i - 3]
+            if estZwd and tropSaas:
+                # RTKLIB udtrop 同源：ZTD 状态 = 总天顶延迟，初值 Saastamoinen（含标准湿度湿延迟）
+                _blh0 = xyz2blh(x0[0], x0[1], x0[2])
+                _zhd0, _zwd0 = saastamoinenZenith(_blh0, humi=0.7)
+                xInit[zwdIdx] = _zhd0 + _zwd0
             PInit = np.zeros((nBase, nBase))
             PInit[:3, :3] = np.diag([sigmaPosInit ** 2] * 3)
             for i in range(3, 3 + nSys):
+                PInit[i, i] = sigmaClk ** 2
+            # d（码-相钟差差）：初值 0、白噪声大方差（覆盖钟漂累积量）
+            for i in range(dIdx, dIdx + nSys):
                 PInit[i, i] = sigmaClk ** 2
             if estZwd:
                 PInit[zwdIdx, zwdIdx] = sigmaZwdInit ** 2
@@ -305,6 +352,10 @@ def ppp(obsHead, obsData, sp3Data, clkData, bandChoose, startDatetime, endDateti
         lat, lon, h = xyz2blh(rr[0], rr[1], rr[2])
         enuRot = bl2enuRot(lat, lon)
         doys = datetime2doys(epoch)
+        # saas_nmf 模式：天顶干延迟（历元级，与卫星无关）
+        zhdEpoch = 0.0
+        if tropSaas and estZwd and h < 200000.0:
+            zhdEpoch = saastamoinenZenith((lat, lon, h), humi=0.0)[0]
         dt = 0.0
         if tracks:
             lastList = [t['lastEpoch'] for t in tracks.values() if t['lastEpoch'] is not None]
@@ -319,12 +370,18 @@ def ppp(obsHead, obsData, sp3Data, clkData, bandChoose, startDatetime, endDateti
                 del tracks[prn]
 
         # --- 过程噪声 ---
+        # 接收机钟差与 d（码-相钟差差）：白噪声，每历元重置。RTKLIB
+        # udclk_ppp 经 initx() 重置时会清零该状态与其他状态的全部协方差
+        # （P 行列置 0 后设对角 VAR_CLK）；若只累加 Q 而保留协方差，巨幅
+        # 载波更新建立的强负相关会在 S 收缩后产生病态增益 → 发散。
+        for i in list(range(3, 3 + nSys)) + list(range(dIdx, dIdx + nSys)):
+            kf.P[i, :] = 0.0
+            kf.P[:, i] = 0.0
+            kf.P[i, i] = sigmaClk ** 2
         Q = np.zeros((kf.n, kf.n))
         if mode == 'kinematic' and dt > 0:
             qPos = float(cfg['q_pos_kinematic']) * dt
             Q[np.ix_(range(3), range(3))] += np.eye(3) * qPos
-        for i in range(3, 3 + nSys):
-            Q[i, i] = sigmaClk ** 2          # 接收机钟差：白噪声（每历元重置方差）
         if estZwd and dt > 0:
             Q[zwdIdx, zwdIdx] = float(cfg['q_zwd']) * dt
         if estGrad and dt > 0:
@@ -344,7 +401,8 @@ def ppp(obsHead, obsData, sp3Data, clkData, bandChoose, startDatetime, endDateti
         # ERP：UT1−UTC（GMST / 太阳月亮方向 / 固体潮 / 相位缠绕统一使用）
         dut1 = getErp(erpData, epoch)['dut1'] if erpData is not None else 0.0
         sunPos = sunPosECEF(epoch, dut1) \
-            if (cfg.get('windup', True) or cfg.get('solid_tide', True)) else None
+            if (cfg.get('windup', True) or cfg.get('solid_tide', True)
+                or atxData is not None) else None
 
         # 固体潮：改正到卫星视线上等价于改正测站坐标（此处直接修正几何距离）
         tideCorr = None
@@ -357,6 +415,14 @@ def ppp(obsHead, obsData, sp3Data, clkData, bandChoose, startDatetime, endDateti
             oceanDisp = oceanLoadingDisp(blqData, station, epoch)
             if oceanDisp is not None:
                 oceanCorr = enuRot.T @ oceanDisp   # ENU → ECEF
+
+        # 极潮：极移激发的测站位移（~2cm，准常值），RTKLIB tide_pole 同源
+        poleCorr = None
+        if erpData is not None and cfg.get('pole_tide', True):
+            erpNow = getErp(erpData, epoch)
+            poleDispENU = poleTide(epoch, (lat, lon, h),
+                                   erpNow['xp'], erpNow['yp'])
+            poleCorr = enuRot.T @ poleDispENU      # ENU → ECEF
 
         for prn, so in satObs.items():
             gnssSys = prn[0]
@@ -375,17 +441,29 @@ def ppp(obsHead, obsData, sp3Data, clkData, bandChoose, startDatetime, endDateti
             mfw = tropMapping(elev)
             cotz = 1.0 / np.tan(elev)   # 梯度映射用（MacMillan）
 
-            # 对流层：Collins 先验（全延迟作干分量先验）+ 估计的残余湿延迟
+            # 对流层先验：
+            #   saas_nmf：NMF 干映射 × 天顶干延迟（RTKLIB trop_model_prec 同源）
+            #   collins ：Collins 经验模型全延迟
             tropPrior = 0.0
-            if h < 200000.0:
+            if tropSaas:
+                mfwH, mfw = nmfMapf(doys, (lat, lon, h), elev)
+                tropPrior = mfwH * zhdEpoch
+            elif h < 200000.0:
                 tropPrior = tropColins(elev, lat, lon, h, doys)
 
-            # 固体潮 + 海潮载荷：投影到视线方向（Δρ = −e·d）
+            # 固体潮 + 海潮载荷：测站位移 d 使视距变化 Δρ = e·d
+            # （e 为卫星→接收机方向；RTKLIB res_ppp 将 disp 加到 rr 后再算
+            #   geodist，等价于 corr = +e·disp）
+            # 固体潮 + 海潮载荷：测站位移 d 使视距变化 Δρ = e·d
+            # （e 为卫星→接收机方向；RTKLIB res_ppp 将 disp 加到 rr 后再算
+            #   geodist，等价于 corr = +e·disp）
             corr = 0.0
             if tideCorr is not None:
-                corr -= float(np.dot(tideCorr, e))
+                corr += float(np.dot(tideCorr, e))
             if oceanCorr is not None:
-                corr -= float(np.dot(oceanCorr, e))
+                corr += float(np.dot(oceanCorr, e))
+            if poleCorr is not None:
+                corr += float(np.dot(poleCorr, e))
 
             satClk = satClkInEpoch.get(prn)
             if satClk is None:
@@ -396,32 +474,53 @@ def ppp(obsHead, obsData, sp3Data, clkData, bandChoose, startDatetime, endDateti
                 b1, tag1, b2, tag2 = atxTags[gnssSys]
                 f1v = bandChoose[gnssSys][b1]['freq']
                 f2v = bandChoose[gnssSys][b2]['freq']
-                ez = -rs / np.linalg.norm(rs)                 # 指向地心
-                v = np.asarray(so['rs'][3:6], dtype=np.float64)
-                vT = v - ez * float(np.dot(v, ez))            # 沿轨（正交化）
-                nv = np.linalg.norm(vT)
-                ex = vT / nv if nv > 1e-6 else np.cross(ez, np.array([0.0, 0.0, 1.0]))
+                # PCO 轴系（RTKLIB satantoff 同源）：Z 指向地心，Y = ez×es(sat→太阳)，
+                # X = ey×ez —— ANTEX 卫星 PCO X 轴指向太阳（太阳指向姿态），非速度沿轨！
+                ez = -rs / np.linalg.norm(rs)                 # Z 轴：指向地心
+                es = (sunPos - rs) / np.linalg.norm(sunPos - rs)
+                ey = np.cross(ez, es)
+                ey /= np.linalg.norm(ey)
+                ex = np.cross(ey, ez)
                 ex /= np.linalg.norm(ex)
-                ey = np.cross(ez, ex)
+                # 真天底角（RTKLIB satantpcv 同源）：nadir = acos(dot(e, ez))，
+                # e(星→接收机) 与 ez(星→地心) 均为卫星发出方向，天顶时≈0°
                 nadir = np.degrees(np.arccos(np.clip(float(np.dot(ez, e)), -1.0, 1.0)))
                 pcoSat, pcvSat = satAntCorr(atxData, prn, epoch, gnssSys,
                                             tag1, f1v, tag2, f2v, nadir)
-                if pcoSat is not None:
+                if pcoSat is not None and cfg.get('sat_pco', True):
                     dEC = ex * pcoSat[0] + ey * pcoSat[1] + ez * pcoSat[2]
                     corr += -float(np.dot(e, dEC)) + pcvSat
-                # 接收机天线 PCO/PCV
-                if recAntType is not None:
-                    zen = np.degrees(np.pi / 2.0 - elev)      # 天顶角
-                    pcoRec, pcvRec = recAntCorr(atxData, recAntType, gnssSys,
-                                                tag1, f1v, tag2, f2v, zen)
+                # 接收机天线 PCO/PCV + RINEX 头 DELTA H/E/N（RTKLIB antdel 同源）
+                if recAntType is not None or antDel is not None:
+                    pcoRec, pcvRec = None, None
+                    if atxData is not None and recAntType is not None \
+                            and cfg.get('rec_pco', True):
+                        zen = np.degrees(np.pi / 2.0 - elev)      # 天顶角
+                        pcoRec, pcvRec = recAntCorr(atxData, recAntType, gnssSys,
+                                                    tag1, f1v, tag2, f2v, zen)
+                    dNEU = None
                     if pcoRec is not None:
-                        dRecEC = enuRot.T @ np.array([pcoRec[1], pcoRec[0], pcoRec[2]])
-                        corr += -float(np.dot(e, dRecEC)) + (pcvRec or 0.0)
+                        dNEU = np.array([pcoRec[0], pcoRec[1], pcoRec[2]])
+                    if antDel is not None and cfg.get('rec_ant_delta', False):
+                        # DELTA H/E/N：ARP 相对标石的位移，仅当解算基准为
+                        # 标石坐标（或参考坐标为标石）时才应施加。IGS SINEX
+                        # 参考坐标指 ARP，施加 antdel 会使估出位置 = ARP +
+                        # antdel（U 偏高 antdel_U）→ 默认关闭（RTKLIB GUI
+                        # 默认 antdel=0，同源行为）。
+                        dNEU = (dNEU if dNEU is not None else np.zeros(3)) \
+                            + np.array([antDel[2], antDel[1], antDel[0]])
+                    if dNEU is not None:
+                        # 接收机相位中心位移 dRec 使视距变化 Δρ = +e·dRec
+                        # （e=卫星→接收机；抬高 H 时贡献 −H·sin(el)，视距变短；
+                        #   RTKLIB 等价于 dantr=e·dRec 从观测中扣除）
+                        dRecEC = enuRot.T @ np.array([dNEU[1], dNEU[0], dNEU[2]])
+                        corr += float(np.dot(e, dRecEC)) + (pcvRec or 0.0)
 
             rowBase = {'prn': prn, 'sys': gnssSys, 'e': e,
                        'rho': rho, 'corr': corr, 'dtsC': satClk * CLIGHT,
                        'tropPrior': tropPrior, 'mfw': mfw,
-                       'cotz': cotz, 'az': az, 'varSat': so['varSat']}
+                       'cotz': cotz, 'az': az, 'varSat': so['varSat'],
+                       'zhd': zhdEpoch}
 
             # 伪距量测（R 叠加卫星轨道/钟差方差 varSat，RTKLIB var_rs 同源）
             rows.append(dict(rowBase, type='P', z=so['P'],
@@ -447,16 +546,19 @@ def ppp(obsHead, obsData, sp3Data, clkData, bandChoose, startDatetime, endDateti
             # 避免首历元巨幅新息（载波整周计数含锁定时刻距离）反复触发剔除
             clockNow = float(kf.x[3 + gSysIndex[gnssSys], 0])
             zwdNow = float(kf.x[zwdIdx, 0]) if estZwd else 0.0
+            if tropSaas:
+                zwdNow = zwdNow - zhdEpoch   # ZTD 状态 → 湿延迟残余
             tropWet = zwdNow * mfw
             if estGrad:
                 gnNow = float(kf.x[gradNIdx, 0])
                 geNow = float(kf.x[gradEIdx, 0])
                 tropWet *= 1.0 + cotz * (gnNow * np.cos(az) + geNow * np.sin(az))
             hNoAmb = rho + corr - satClk * CLIGHT + clockNow + tropPrior + tropWet
-            bInit = (so['L'] - so['lamIF'] * w) - hNoAmb
+            wFlip = -1.0 if cfg.get('windup_flip', False) else 1.0
+            bInit = (so['L'] - so['lamIF'] * w * wFlip) - hNoAmb
 
             rows.append(dict(rowBase, type='L',
-                             z=so['L'] - so['lamIF'] * w,
+                             z=so['L'] - so['lamIF'] * w * wFlip,
                              R=(float(cfg['sigma_l']) * elevFactor) ** 2
                              + rowBase['varSat'],
                              w=w, isNewSat=isNewSat, gapNew=gapNew,
@@ -480,6 +582,8 @@ def ppp(obsHead, obsData, sp3Data, clkData, bandChoose, startDatetime, endDateti
                     continue
                 clock = float(kf.x[3 + gSysIndex[row['sys']], 0])
                 zwdS0 = float(kf.x[zwdIdx, 0]) if estZwd else 0.0
+                if tropSaas:
+                    zwdS0 = zwdS0 - row['zhd']
                 tropWet0 = zwdS0 * row['mfw']
                 if estGrad:
                     gn0 = float(kf.x[gradNIdx, 0])
@@ -511,19 +615,33 @@ def ppp(obsHead, obsData, sp3Data, clkData, bandChoose, startDatetime, endDateti
                 # 新弧段：用候选初值新建模糊度状态
                 idx = kf.add_state(row['bInit'], sigmaAmb ** 2)
                 tracks[prn] = {'idx': idx, 'lastEpoch': epoch, 'windup': row['w']}
+                row['contArc'] = False
             else:
                 # 连续弧段（含被跳变改正挽救的弧段）
                 tr['windup'] = row['w']
                 tr['lastEpoch'] = epoch
+                row['contArc'] = True
             row['ambIdx'] = tracks[prn]['idx']
 
-        # --- 量测更新（逐量测 + 粗差剔除）---
+        # ---- RTKLIB 同源批量量测更新（整历元单次联合 filter）----
+        # RTKLIB pppos 将全部卫星的码+载波残差堆为一个向量，用同一状态
+        # 快照一次 filter：最小二乘自动把共模钟漂分给钟差/d 状态、码-相
+        # 残差之差分给各星模糊度，位置只吸收几何差分信息。
+        # 任何"逐星/逐行"序贯处理都有序贯污染：白噪声钟差方差在第一颗星
+        # 更新后即塌缩到 ~R，后续星的个体差新息以增益≈1 直接冲击位置
+        # （实测 G19 amb 被甩到 -3888、G20 新息 +11279 → 爆炸，fix17）。
+        # 批量更新无逐行拒绝门（RTKLIB ppp 同源），仅保留 guard 防护。
         nMeas = 0
         nRej = 0
-        for row in rows:
+
+        def _measModel(row):
+            """非线性量测模型 h(x) 与设计阵 H（用当前状态）。"""
             idxClk = 3 + gSysIndex[row['sys']]
+            idxD = dIdx + gSysIndex[row['sys']]
             clock = float(kf.x[idxClk, 0])
             zwdS = float(kf.x[zwdIdx, 0]) if estZwd else 0.0
+            if tropSaas:
+                zwdS = zwdS - row['zhd']
             gradFac = 1.0
             if estGrad:
                 gnS = float(kf.x[gradNIdx, 0])
@@ -532,12 +650,16 @@ def ppp(obsHead, obsData, sp3Data, clkData, bandChoose, startDatetime, endDateti
                 gradFac = 1.0 + row['cotz'] * (gnS * np.cos(row['az'])
                                                + geS * np.sin(row['az']))
             tropWet = zwdS * row['mfw'] * gradFac if estZwd else 0.0
-            # 非线性量测模型 h(x)
             hHat = row['rho'] + row['corr'] - row['dtsC'] + clock \
                 + row['tropPrior'] + tropWet
             H = np.zeros((1, kf.n))
             H[0, :3] = row['e']
             H[0, idxClk] = 1.0
+            if row['type'] == 'L':
+                # 载波量测含 d（码-相钟差差）：钟差由码驱动吸收钟漂，载波
+                # 与码钟差之差由 d 白噪声状态吸收（RTKLIB 钟差吸收共模同效）
+                H[0, idxD] = 1.0
+                hHat += float(kf.x[idxD, 0])
             if estZwd:
                 H[0, zwdIdx] = row['mfw'] * gradFac
             if estGrad:
@@ -545,16 +667,35 @@ def ppp(obsHead, obsData, sp3Data, clkData, bandChoose, startDatetime, endDateti
                 cg = row['mfw'] * row['cotz'] * zwdS
                 H[0, gradNIdx] = cg * np.cos(row['az'])
                 H[0, gradEIdx] = cg * np.sin(row['az'])
+            return hHat, H
+
+        # 全部行（码+载波、全部卫星）堆叠为一次联合批量 filter
+        H = np.zeros((len(rows), kf.n))
+        z = np.zeros(len(rows))
+        R = np.zeros((len(rows), len(rows)))
+        hh = np.zeros(len(rows))
+        for i, row in enumerate(rows):
+            hHat, Hi = _measModel(row)
             if row['type'] == 'L':
-                H[0, row['ambIdx']] = 1.0
+                Hi[0, row['ambIdx']] = 1.0
                 hHat += float(kf.x[row['ambIdx'], 0])
-            innov, S, rejected = kf.update(H, row['z'], row['R'], hHat=hHat,
-                                           nsigma=float(cfg['outlier_nsigma']))
-            if innov is None:
-                continue
-            nMeas += 1
-            if rejected:
-                nRej += 1
+            H[i, :] = Hi[0, :]
+            z[i] = row['z']
+            R[i, i] = row['R']
+            hh[i] = hHat
+        innov, S, rejected = kf.update_multi(H, z, R, hHat=hh)
+        if innov is not None:
+            nMeas = len(rows)
+            if dbgRes is not None:
+                for i, row in enumerate(rows):
+                    _sinel = float(np.clip(-np.dot(row['e'], enuRot[2]),
+                                           -1.0, 1.0))
+                    _ambDbg = float(kf.x[row['ambIdx'], 0]) \
+                        if row['type'] == 'L' else 0.0
+                    dbgRes.append((sodDbg, row['prn'], row['type'],
+                                   np.degrees(np.arcsin(_sinel)),
+                                   np.degrees(row['az']), float(innov[i]),
+                                   float(S[i, i]), int(rejected), _ambDbg))
         if nMeas < 4:
             continue
 
@@ -565,6 +706,12 @@ def ppp(obsHead, obsData, sp3Data, clkData, bandChoose, startDatetime, endDateti
             stateMap = kf.remove_states(deadIdx)
             for prn in tracks:
                 tracks[prn]['idx'] = stateMap.get(tracks[prn]['idx'], tracks[prn]['idx'])
+
+        # --- 载波侧码-相一致性平移（已由量测更新内的 cL 共模扣除取代）---
+        # 载波更新前已按连续弧段新息中位数 cL 扣除码-相钟差共模（见量测
+        # 更新块），共模不再进入任何状态；此处若再把 offMed（≈cL）写进
+        # amb，将与 cL 扣除双重处理（amb 每历元累积漂移 → 发散），故删除。
+        # 毫秒级钟跳仍由量测更新前的码侧跳变改正（jumpShift）处理。
 
         # --- DOP（伪距几何）---
         if len(codeRows) >= 4:
@@ -597,7 +744,7 @@ def ppp(obsHead, obsData, sp3Data, clkData, bandChoose, startDatetime, endDateti
         posData[epoch]['clk'] = float(kf.x[3, 0])
         posData[epoch]['NSAT'] = len(codeRows)
         posData[epoch]['NREJ'] = nRej
-        posData[epoch]['ZWD'] = float(kf.x[zwdIdx, 0]) if cfg.get('est_zwd', True) else 0.0
+        posData[epoch]['ZWD'] = (float(kf.x[zwdIdx, 0]) - zhdEpoch) if estZwd else 0.0
         posData[epoch]['SIG3D'] = float(np.sqrt(max(kf.P[0, 0] + kf.P[1, 1] + kf.P[2, 2], 0.0)))
         Xs.append(x)
         Ys.append(y)
@@ -617,6 +764,11 @@ def ppp(obsHead, obsData, sp3Data, clkData, bandChoose, startDatetime, endDateti
     # ---------------- 输出 ----------------
     if posFile is not None:
         writePosData(posData, posFile, refX, refY, refZ)
+    if os.environ.get('PPP_DEBUG_RES') and dbgRes:
+        with open(os.environ['PPP_DEBUG_RES'], 'w', encoding='utf-8') as f:
+            f.write('sod prn type elev az innov S rej amb\n')
+            for r in dbgRes:
+                f.write('%.1f %s %s %.3f %.3f %.6f %.6f %d %.3f\n' % r)
     if plot_show or plot_save:
         plot_ppp(posData, refX, refY, refZ, plot_show=plot_show,
                  plot_save=plot_save,

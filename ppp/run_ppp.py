@@ -89,6 +89,12 @@ def process_one_file(obs_file, sp3Data, clkData, cfg, base_output_dir):
         return
 
     station = extract_station_from_filename(obs_file)
+    if not station:
+        # 文件名不规范时回退到 RINEX 头 MARKER NAME（海潮 BLQ 匹配依赖测站名）
+        obsHead0 = readObsHead(obs_file, needSatList=False)
+        station = obsHead0.get('MARKER NAME') or None
+        if station:
+            station = station.upper()
     print(f"{'='*60}")
     print(f"[PPP] 正在处理观测文件：{obs_file}")
 
@@ -136,6 +142,8 @@ def run_ppp(args):
         cfg['bands'] = args.bands
     if args.grad:
         cfg['est_trop_grad'] = True
+    if args.elev is not None:
+        cfg['elev_cutoff_deg'] = args.elev
     if args.no_sat_var:
         cfg['use_sat_var'] = False
     if args.no_jump:
@@ -250,6 +258,8 @@ def create_parser():
     # 模型开关（覆盖配置文件）
     parser.add_argument("--grad", action="store_true",
                         help="启用对流层梯度估计（MacMillan 模型，RTKLIB TROPOPT_ESTG 同源）")
+    parser.add_argument("--elev", type=float, default=None,
+                        help="高度角截止角（度，覆盖配置 elev_cutoff_deg）")
     parser.add_argument("--no_sat_var", action="store_true",
                         help="关闭 SP3 卫星轨道/钟差方差加权（var_rs）")
     parser.add_argument("--no_jump", action="store_true",

@@ -52,6 +52,9 @@ def detectCycleSlip(obsData, bandChooseWithFreq, startDatetime=None, endDatetime
     slipMap = {}
     epochList = sorted(obsData.keys())
 
+    # 第一遍：收集全星 MW 值（星间共模消除用）
+    mwAll = {}   # {epoch: {prn: mwVal}}
+    lcMeta = {}  # {prn: [(epoch, L1, L2, lli1, lli2)]} 有完整四量的记录
     for prn in _all_prn(obsData, startDatetime, endDatetime):
         gnssSys = prn[0]
         if gnssSys not in bandChooseWithFreq:
@@ -66,10 +69,6 @@ def detectCycleSlip(obsData, bandChooseWithFreq, startDatetime=None, endDatetime
         lambdaW = 299792458.0 / (f1 - f2)
         coef = (f1 - f2) / (f1 + f2)
 
-        mwList = []       # (epoch, Nw)
-        gfList = []       # (epoch, GF)
-        slipSet = set()
-
         for epoch in epochList:
             if startDatetime is not None and epoch < startDatetime:
                 continue
@@ -82,29 +81,56 @@ def detectCycleSlip(obsData, bandChooseWithFreq, startDatetime=None, endDatetime
             if lc is None:
                 continue
             L1, L2, P1, P2, lli1, lli2 = lc
+            # MW 组合（周）：Nw = φ1 − φ2 − (f1−f2)/(f1+f2)·(P1·f1 + P2·f2)/c
+            # 注意码项必须按频率加权（P·f/c），几何项才能与 φ1−φ2 的
+            # ρ·(f1−f2)/c 抵消；若写成 (P1+P2)/λw，几何残留 = 几何变化率
+            # （实测 ~15000 周/30s），将每历元误报周跳、模糊度弧段无法维持
+            mwAll.setdefault(epoch, {})[prn] = \
+                L1 - L2 - coef * (P1 * f1 + P2 * f2) / 299792458.0
+            # GF 组合（米）：φ1·λ1 − φ2·λ2，几何完全抵消，历元间差分
+            # 只剩电离层变化（mm~cm 级）；若写成 (L1−L2)·λw，几何残留
+            # (f1−f2)/(f1+f2)·Δρ（实测 ~2km/30s）同样每历元误报周跳
+            lcMeta.setdefault(prn, []).append(
+                (epoch, lambdaW, lli1, lli2,
+                 L1 * 299792458.0 / f1 - L2 * 299792458.0 / f2))
+
+    # 全星 MW 中位数（接收机钟漂/钟跳为全星共模，中位数差分可消除；
+    # 单星周跳在星间残差中保留）
+    medMap = {ep: float(np.median(list(v.values())))
+              for ep, v in mwAll.items() if len(v) >= 4}
+
+    for prn, metas in lcMeta.items():
+        slipSet = set()
+
+        # LLI 直接标记
+        for epoch, lambdaW, lli1, lli2, gfVal in metas:
             if lli1 != 0 or lli2 != 0:
                 slipSet.add(epoch)
-            mwList.append((epoch, L1 - L2 - coef * (P1 + P2) / lambdaW))
-            gfList.append((epoch, (L1 - L2) * lambdaW))
 
-        # ---- MW 历元间差分 + 滑动窗标准差 ----
+        # ---- MW 历元间差分 + 滑动窗标准差（星间共模消除）----
+        # 接收机钟漂/钟跳使 P1、P2 历元间同量跳变，MW 码项产生数百周
+        # 共模变化（实测本数据 ~1400 周/30s），直接差分将每历元误报周跳、
+        # 模糊度弧段无法维持；改用 MW − 全星中位数 的星间残差做历元差分
+        mwList = [(ep, mwAll[ep][prn]) for ep in sorted(mwAll) if prn in mwAll[ep]]
         mwEpochs = [e for e, _ in mwList]
         mwVals = np.array([v for _, v in mwList])
+        medVals = np.array([medMap.get(e, np.nan) for e in mwEpochs])
+        resMW = mwVals - medVals            # 星间残差（消除共模钟漂）
         for i in range(1, len(mwVals)):
-            diff = mwVals[i] - mwVals[i - 1]
+            diff = resMW[i] - resMW[i - 1]
             if (mwEpochs[i] - mwEpochs[i - 1]).total_seconds() > 120.0:
                 slipSet.add(mwEpochs[i])   # 长中断后重置
                 continue
             lo = max(0, i - MW_WINDOW)
-            window = np.abs(np.diff(mwVals[lo:i]))
+            window = np.abs(np.diff(resMW[lo:i]))
             sigma = float(np.std(window)) if len(window) >= 5 else 1.0
             thresh = max(mwSigmaFactor * sigma, MW_MIN_THRESH)
             if abs(diff) > thresh:
                 slipSet.add(mwEpochs[i])
 
-        # ---- GF 历元间差分 ----
-        gfEpochs = [e for e, _ in gfList]
-        gfVals = np.array([v for _, v in gfList])
+        # ---- GF 历元间差分（纯相位组合，天然免疫钟漂）----
+        gfEpochs = [e for e, _, _, _, gf in metas]
+        gfVals = np.array([gf for _, _, _, _, gf in metas])
         for i in range(1, len(gfVals)):
             diff = gfVals[i] - gfVals[i - 1]
             if (gfEpochs[i] - gfEpochs[i - 1]).total_seconds() > 120.0:

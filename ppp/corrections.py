@@ -9,6 +9,7 @@ corrections.py — PPP 误差改正模型：
     - phaseWindUp()     相位缠绕改正（连续跟踪累计，单位：周）
     - tropMapping()     对流层湿延迟映射函数（与 spos.trop 同款）
 """
+import datetime
 import math
 import numpy as np
 
@@ -152,6 +153,37 @@ def solidEarthTide(epoch, siteXyz, dut1=0.0):
     return disp
 
 
+# ---------------------------------------------------------------- 极潮
+def poleTide(epoch, posLLH, xp, yp):
+    """
+    极潮位移（IERS 2010 eq.7.26，RTKLIB tide_pole 同源）。
+    epoch  : datetime（GPS/UTC 皆可，缓慢信号）
+    posLLH : (lat rad, lon rad, h m)
+    xp/yp  : ERP 极移（角秒）
+    返回 ENU 位移 (dE, dN, dU)（m，加到测站坐标上）。
+    """
+    AS2R = math.pi / (180.0 * 3600.0)
+    # IERS 平均极（mas），RTKLIB iers_mean_pole 同源
+    ep2000 = datetime.datetime(2000, 1, 1)
+    y = (epoch - ep2000).total_seconds() / 86400.0 / 365.25
+    if y < 3653.0 / 365.25:      # 2010.0 前
+        y2 = y * y
+        y3 = y2 * y
+        xp_bar = 55.974 + 1.8243 * y + 0.18413 * y2 + 0.007024 * y3
+        yp_bar = 346.346 + 1.7896 * y - 0.10729 * y2 - 0.000908 * y3
+    else:                        # 2010.0 后
+        xp_bar = 23.513 + 7.6141 * y
+        yp_bar = 358.891 - 0.6287 * y
+    m1 = xp - xp_bar * 1e-3      # (as)：真极 − 平均极
+    m2 = -yp + yp_bar * 1e-3
+    lat, lon = posLLH[0], posLLH[1]
+    cosl, sinl = math.cos(lon), math.sin(lon)
+    dE = 9e-3 * math.sin(lat) * (m1 * sinl - m2 * cosl)
+    dN = -9e-3 * math.cos(2.0 * lat) * (m1 * cosl + m2 * sinl)
+    dU = -33e-3 * math.sin(2.0 * lat) * (m1 * cosl + m2 * sinl)
+    return np.array([dE, dN, dU])
+
+
 # ---------------------------------------------------------------- 相位缠绕
 def _unit(v):
     return v / np.linalg.norm(v)
@@ -216,3 +248,87 @@ def phaseWindUp(prn, satPos, recPos, sunPosECEF, prevWindup):
 def tropMapping(elevation):
     """湿延迟映射函数（与 spos/trop.py 同款简化 Niell 形式），elevation 为弧度。"""
     return 1.001 / np.sqrt(0.002001 + np.sin(elevation) ** 2)
+
+
+# ---------- Saastamoinen 干延迟（RTKLIB tropmodel 同源，标准大气） ----------
+def saastamoinenZenith(posLLH, humi=0.0):
+    """
+    Saastamoinen 天顶延迟分解（RTKLIB tropmodel 同源公式，标准大气）。
+    posLLH : (lat rad, lon rad, h m)
+    humi   : 相对湿度（0.0 只算干延迟；0.7 = RTKLIB REL_HUMI）
+    返回 (zhd, zwd) 天顶干/湿延迟（米）。
+    """
+    lat, _, hgt = posLLH
+    hgt = max(hgt, 0.0)
+    pres = 1013.25 * (1.0 - 2.2557e-5 * hgt) ** 5.2568
+    temp = 15.0 - 6.5e-3 * hgt + 273.16
+    e = 6.108 * humi * math.exp((17.15 * temp - 4684.0) / (temp - 38.45))
+    zhd = 0.0022768 * pres / (1.0 - 0.00266 * math.cos(2.0 * lat) - 0.00028 * hgt / 1e3)
+    zwd = 0.002277 * (1255 / temp + 0.05) * e
+    return zhd, zwd
+
+
+def tropSaastamoinen(posLLH, elevation, humi=0.0):
+    """Saastamoinen 斜延迟（1/cos z 映射，RTKLIB tropmodel 同源），米。"""
+    z = math.pi / 2.0 - elevation
+    zhd, zwd = saastamoinenZenith(posLLH, humi)
+    return (zhd + zwd) / math.cos(z)
+
+
+# ---------- NMF 映射函数（RTKLIB nmf/tropmapf 逐行移植，Niell 1996） ----------
+_NMF_COEF = [
+    # hydro-ave-a,b,c / hydro-amp-a,b,c / wet-a,b,c，纬度 15,30,45,60,75
+    [1.2769934e-3, 1.2683230e-3, 1.2465397e-3, 1.2196049e-3, 1.2045996e-3],
+    [2.9153695e-3, 2.9152299e-3, 2.9288445e-3, 2.9022565e-3, 2.9024912e-3],
+    [62.610505e-3, 62.837393e-3, 63.721774e-3, 63.824265e-3, 64.258455e-3],
+    [0.0000000e-0, 1.2709626e-5, 2.6523662e-5, 3.4000452e-5, 4.1202191e-5],
+    [0.0000000e-0, 2.1414979e-5, 3.0160779e-5, 7.2562722e-5, 11.723375e-5],
+    [0.0000000e-0, 9.0128400e-5, 4.3497037e-5, 84.795348e-5, 170.37206e-5],
+    [5.8021897e-4, 5.6794847e-4, 5.8118019e-4, 5.9727542e-4, 6.1641693e-4],
+    [1.4275268e-3, 1.5138625e-3, 1.4572752e-3, 1.5007428e-3, 1.7599082e-3],
+    [4.3472961e-2, 4.6729510e-2, 4.3908931e-2, 4.4626982e-2, 5.4736038e-2],
+]
+_NMF_AHT = (2.53e-5, 5.49e-3, 1.14e-3)   # 高度改正
+
+
+def _nmfInterpc(coef, lat):
+    """RTKLIB interpc：纬度线性插值（lat 为度，取绝对值后 15° 网格）。"""
+    i = int(lat / 15.0)
+    if i < 1:
+        return coef[0]
+    elif i > 4:
+        return coef[4]
+    return coef[i - 1] * (1.0 - lat / 15.0 + i) + coef[i] * (lat / 15.0 - i)
+
+
+def _nmfMapf(el, a, b, c):
+    """RTKLIB mapf：连分式映射函数。"""
+    sinel = math.sin(el)
+    return (1.0 + a / (1.0 + b / (1.0 + c))) / (sinel + (a / (sinel + b / (sinel + c))))
+
+
+def nmfMapf(doy, posLLH, elevation):
+    """
+    NMF 映射函数（RTKLIB nmf() 同源）。
+    doy      : 年积日
+    posLLH   : (lat rad, lon rad, h m)
+    elevation: 高度角（弧度）
+    返回 (m_h, m_w)：干/湿映射函数。
+    """
+    el = elevation
+    lat = math.degrees(posLLH[0])
+    hgt = posLLH[2]
+    if el <= 0.0:
+        return 0.0, 0.0
+    # 年相位：doy-28 起，南半球加半年
+    y = (doy - 28.0) / 365.25 + (0.5 if lat < 0.0 else 0.0)
+    cosy = math.cos(2.0 * math.pi * y)
+    lat = abs(lat)
+    ah = [0.0] * 3
+    aw = [0.0] * 3
+    for i in range(3):
+        ah[i] = _nmfInterpc(_NMF_COEF[i], lat) - _nmfInterpc(_NMF_COEF[i + 3], lat) * cosy
+        aw[i] = _nmfInterpc(_NMF_COEF[i + 6], lat)
+    # 高度改正（椭球高代替海拔）
+    dm = (1.0 / math.sin(el) - _nmfMapf(el, *_NMF_AHT)) * hgt / 1e3
+    return _nmfMapf(el, *ah) + dm, _nmfMapf(el, *aw)

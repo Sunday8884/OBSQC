@@ -34,9 +34,25 @@ def bandToAtxTag(sys, band):
         'E': {'C1': 'E01', 'C5': 'E05', 'C7': 'E07', 'C8': 'E08', 'C6': 'E06'},
     }
     tab = m.get(sys)
-    if tab is None:
+    if tab is not None:
+        tag = tab.get(band[:2])
+        if tag is not None:
+            return tag
+    # 波段名（'L1'/'L2'/'L5'…）→ ANTEX 频率标签
+    # GLONASS 为 FDMA：波段号 1/2/3 对应 R01/R02/R03，4/6 对应 R04/R06
+    mBand = {
+        'G': {'1': 'G01', '2': 'G02', '5': 'G05'},
+        'R': {'1': 'R01', '2': 'R02', '3': 'R03', '4': 'R04', '6': 'R06'},
+        'E': {'1': 'E01', '5': 'E05', '6': 'E06', '7': 'E07', '8': 'E08'},
+        'C': {'1': 'C02', '2': 'C01', '5': 'C08', '6': 'C06', '7': 'C07'},
+        'J': {'1': 'J01', '2': 'J02', '5': 'J05'},
+        'I': {'5': 'I05'},
+        'S': {'1': 'S01', '5': 'S05'},
+    }
+    tabB = mBand.get(sys)
+    if tabB is None or not band.startswith('L'):
         return None
-    return tab.get(band[:2])
+    return tabB.get(band[1:])
 
 
 # ---------------------------------------------------------------- 解析
@@ -53,7 +69,7 @@ def _parse_pcv_line(line):
     parts = line.split()
     try:
         if parts[0].upper() == 'NOAZI':
-            return [float(v) for v in parts[1:-1]]  # 末尾字段是注释名
+            return [float(v) for v in parts[1:]]  # NOAZI 行全部字段均为网格值
         return [float(v) for v in parts[:-1]]
     except Exception:
         return None
@@ -105,10 +121,16 @@ def readAntex(atxFile):
                     if len(toks) > 1:
                         cur['serial'] = toks[-1]
                         cur['type'] = ' '.join(toks[:-1])
+            elif label == 'DAZI':
+                try:
+                    cur['dazi'] = float(line[0:6])
+                except Exception:
+                    cur['dazi'] = 0.0
             elif label == 'ZEN1 / ZEN2 / DZEN':
                 try:
-                    cur['zen1'] = float(line[2:8])
-                    cur['dzen'] = float(line[13:19]) if line[13:19].strip() else 1.0
+                    toks = line[:60].split()
+                    cur['zen1'] = float(toks[0])
+                    cur['dzen'] = float(toks[2]) if len(toks) > 2 else 1.0
                 except Exception:
                     pass
             elif label == 'VALID FROM':
@@ -129,8 +151,9 @@ def readAntex(atxFile):
                     cur['freq'][tag]['NEU'] = (n / 1000.0, e / 1000.0, u / 1000.0)
                 except Exception:
                     pass
-            elif inFreq and (line.strip().startswith('NOAZI') or
-                             (line.strip()[:1].isdigit() and cur.get('_dazi', 0))):
+            elif inFreq and line.strip().startswith('NOAZI'):
+                # 只取 NOAZI 行（方位角相关行会覆盖 NOAZI 且本引擎不支持
+                # 方位角内插，RTKLIB readatx 相对标定模式同取 NOAZI）
                 vals = _parse_pcv_line(line)
                 if vals:
                     tag = list(cur['freq'].keys())[-1]
@@ -168,6 +191,9 @@ def _pick_sat_record(atxData, prn, epoch):
 
 
 def _pick_rec_record(atxData, antType):
+    # RINEX 头 ANT # / TYPE 字段含串号（如 'JAVRINGANT_G5T  NONE'），
+    # ANTEX 按天线类型名（去串号）索引
+    antType = antType.split()[0] if antType else antType
     recs = atxData['rec'].get(antType)
     if not recs:
         return None

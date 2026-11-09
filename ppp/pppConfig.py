@@ -31,13 +31,27 @@ DEFAULT_CONFIG = {
     'q_grad': 1e-8,              # 梯度过程噪声方差率（RTKLIB SQR(prn_trop*0.1)）
     # ---- 滤波初值与过程噪声 ----
     'sigma_pos_init': 100.0,     # 坐标初值方差 (m)^2
-    'sigma_clk': 1e6,            # 接收机钟差：白噪声方差 (m)^2
+    'sigma_clk': 100.0,          # 接收机钟差：白噪声标准差 (m)，方差=平方（RTKLIB VAR_CLK=1e4 同源）
     'sigma_amb': 100.0,          # 模糊度初值方差（距离域，(m)^2）
     'q_pos_kinematic': 100.0,    # 动态模式位置随机游走方差率 (m^2/s)
     # ---- 误差模型 ----
-    'trop_prior': 'collins',
+    'trop_prior': 'saas_nmf',    # saas_nmf: Saastamoinen+NMF(RTKLIB 同源) | collins: 旧经验模型
     'windup': True,
     'solid_tide': True,
+    'sat_pco': True,             # 卫星天线 PCO（ANTEX，含在改正 corr 中）
+    'rec_pco': True,             # 接收机天线 PCO/PCV（ANTEX）
+    'rec_ant_delta': False,      # RINEX 头 DELTA H/E/N：仅解算基准为标石坐标时开启
+                                 # （IGS SINX 参考坐标指 ARP，默认关闭避免 U 偏高 antdel_U）
+    'pole_tide': True,           # 极潮改正（IERS 2010 eq.7.26，RTKLIB tide_pole 同源）
+    'windup_flip': False,        # 消融开关：缠绕改正取反（诊断符号用）
+    # 载波码-相一致性平移阈值（米）：连续弧段载波新息中位数超过该值时，
+    # 整体平移模糊度以恢复码-相相干（接收机钟 Stepping 码跟随、相位连续所致）
+    'phase_jump_thresh_m': 10.0,
+    # 载波拒绝门限下限（米）：模糊度方差收敛后 3σ 门限收缩到厘米级，
+    # 而接收机钟漂（码漂移数百米/历元、载波不含）使载波新息达数百米，
+    # 新息由白噪声钟差吸收（RTKLIB 载波无拒绝门同源行为）；门限下限
+    # 防止载波被永久拒绝导致模糊度方差不收缩的死锁
+    'carrier_reject_thresh_m': 1000.0,
     # ---- 精密产品（可选）----
     'atx_file': None,            # ANTEX 相位中心改正文件（igs20.atx 等）
     'blq_file': None,            # BLQ 海潮载荷文件（FES2004 等）
